@@ -7325,3 +7325,78 @@ test("usage request timeout detaches its update listener", async () => {
     vi.useRealTimers();
   }
 });
+function conditionalMessageInput() {
+  return {
+    agentId: "recipient",
+    messageId: "existing-work-handoff",
+    text: "Review this existing dependency.",
+    expected: {
+      provider: "codex",
+      sessionId: "native-original",
+      cwd: "/owned/worktree",
+      workspaceId: "workspace-original",
+      parentAgentId: null,
+      lastUserMessageAt: null,
+      updatedAt: "2026-10-05T00:00:00.000Z",
+    },
+    expiresAt: "2026-10-05T00:01:00.000Z",
+  };
+}
+
+test("conditional messages refuse an old host without using legacy sends", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "conditional",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen();
+  await connected;
+  const before = mock.sent.length;
+  await expect(client.admitAgentMessage(conditionalMessageInput())).rejects.toThrow(
+    "Host does not support conditional agent message admission",
+  );
+  expect(mock.sent.length).toBe(before);
+});
+
+for (const result of [
+  { status: "accepted", turnId: "existing-native-turn" },
+  { status: "rejected", reason: "permission_pending" },
+  { status: "outcome_unknown" },
+] as const) {
+  test(`conditional messages retain ${result.status} through the negotiated wire operation`, async () => {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "conditional",
+      transportFactory: () => mock.transport,
+      reconnect: { enabled: false },
+    });
+    clients.push(client);
+    const connected = client.connect();
+    mock.triggerOpen({ features: { ownedSubscriptions: true, conditionalAgentMessages: true } });
+    await connected;
+    const pending = client.admitAgentMessage(conditionalMessageInput());
+    const frame = parseSentFrame(mock.sent.at(-1));
+    expect(frame).toEqual({
+      ...conditionalMessageInput(),
+      type: "agent.message.admit.request",
+      requestId: expect.any(String),
+    });
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "agent.message.admit.response",
+        payload: {
+          requestId: frame.requestId,
+          agentId: "recipient",
+          messageId: "existing-work-handoff",
+          result,
+        },
+      }),
+    );
+    expect(await pending).toEqual(result);
+  });
+}

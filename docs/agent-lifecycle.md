@@ -50,6 +50,29 @@ older cancellation from settling a newer turn. If interruption is rejected or ti
 keeps its active foreground turn and replacement, reload, rewind, and Stop report the failure.
 Accepting new work after an ambiguous interruption would create a split-brain session.
 
+## Conditional message admission
+
+Use `agent.message.admit.request` for automation that must not interrupt a user.
+Gate it on `server_info.features.conditionalAgentMessages`; older hosts must be
+updated rather than using an ordinary send as a fallback.
+
+The request names the exact agent and the observed provider/native session,
+workspace, parent, directory, latest user timestamp and revision timestamp. The
+daemon accepts only a resident idle recipient with no active or reserved turn,
+permission wait, archive or changed scope. It rechecks the request's deadline and
+current connection authority at the synchronous run-reservation boundary. It does
+not load a closed runtime, unarchive, change a mode, answer permissions or steer.
+Existing interactive sends keep their current behavior.
+
+`accepted` identifies the provider turn, not completion of the task. `rejected`
+is terminal for that message ID and starts no provider turn; a later attempt needs
+fresh observations and a different ID. `outcome_unknown` is retained across
+reconnect/restart and must not be replayed automatically. Inspect the resulting
+turn/history before deciding what to do. Payload changes cannot reuse an ID.
+
+This operation uses the same workspace authority as an ordinary send. It does not
+grant permission to resume a paused Goal or perform the task's external effects.
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.

@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import type {
+  AdmitAgentMessageRequest,
+  AgentMessageAdmissionResult,
+} from "@getpaseo/protocol/messages";
 import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
@@ -2322,6 +2326,109 @@ export class AgentManager {
       }
     });
     return result;
+  }
+
+  /** Admit a resident idle recipient without hydration, steering or replacement. */
+  async admitAgentMessage(
+    input: Omit<AdmitAgentMessageRequest, "type" | "requestId"> & { authorize: () => boolean },
+  ): Promise<AgentMessageAdmissionResult> {
+    return this.runLifecycleMutation(input.agentId, () =>
+      this.runForegroundMutation(input.agentId, async () => {
+        const record = await this.requireRegistry().get(input.agentId);
+        if (!record) return { status: "rejected", reason: "not_found" };
+        if (record.archivedAt) return { status: "rejected", reason: "archived" };
+        await this.drainSessionEvents(input.agentId);
+        this.agentStreamCoalescer.flushFor(input.agentId);
+        const agent = this.getAgent(input.agentId);
+        if (
+          !agent ||
+          agent.lifecycle === "closed" ||
+          agent.lifecycle === "initializing" ||
+          agent.lifecycle === "error"
+        ) {
+          return { status: "rejected", reason: "not_idle" };
+        }
+        if (agent.pendingPermissions.size || agent.inFlightPermissionResponses.size) {
+          return { status: "rejected", reason: "permission_pending" };
+        }
+        if (this.hasInFlightRun(agent.id) || agent.activeTurnId || agent.pendingReplacement) {
+          return { status: "rejected", reason: "busy" };
+        }
+        if (!this.matchesMessageAdmissionScope(agent, input.expected)) {
+          return { status: "rejected", reason: "scope_changed" };
+        }
+        const deadline = Date.parse(input.expiresAt);
+        if (!Number.isFinite(deadline) || deadline <= Date.now())
+          return { status: "rejected", reason: "expired" };
+        if (!this.acceptingAgentRegistrations) return { status: "rejected", reason: "busy" };
+        if (!input.authorize()) return { status: "rejected", reason: "not_authorized" };
+        // No await separates these checks from streamAgent's synchronous pending
+        // run reservation. Archive/close share the lifecycle lane held above.
+        // Ordinary starts observe that reservation and cannot overtake it.
+        const iterator = this.streamAgent(agent.id, input.text, {
+          clientMessageId: input.messageId,
+        });
+        return this.finishMessageAdmission(agent.id, iterator);
+      }),
+    );
+  }
+
+  private matchesMessageAdmissionScope(
+    agent: ManagedAgent,
+    expected: AdmitAgentMessageRequest["expected"],
+  ): boolean {
+    return (
+      agent.provider === expected.provider &&
+      agent.persistence?.sessionId === expected.sessionId &&
+      agent.cwd === expected.cwd &&
+      (agent.workspaceId ?? null) === expected.workspaceId &&
+      (getParentAgentIdFromLabels(agent.labels) ?? null) === expected.parentAgentId &&
+      (agent.lastUserMessageAt?.toISOString() ?? null) === expected.lastUserMessageAt &&
+      agent.updatedAt.toISOString() === expected.updatedAt
+    );
+  }
+
+  private async finishMessageAdmission(
+    agentId: string,
+    iterator: AsyncGenerator<AgentStreamEvent>,
+  ): Promise<AgentMessageAdmissionResult> {
+    const first = iterator.next();
+    const drain = async () => {
+      try {
+        await first;
+        for await (const _event of iterator) {
+          /* Manager persists and broadcasts events. */
+        }
+      } catch (error) {
+        this.logger.error(
+          { err: error, agentId: agentId },
+          "Conditionally admitted agent stream failed",
+        );
+      }
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        first.then((value) => ({ kind: "started" as const, value })),
+        new Promise<{ kind: "unknown" }>((resolveUnknown) => {
+          timer = setTimeout(() => resolveUnknown({ kind: "unknown" }), 60000);
+        }),
+      ]);
+      // A delayed provider remains owned by the pending run. A timeout must
+      // release admission locks without canceling it or allowing replay.
+      void drain();
+      if (outcome.kind === "unknown") return { status: "outcome_unknown" };
+      if (
+        outcome.value.done ||
+        outcome.value.value.type !== "turn_started" ||
+        !outcome.value.value.turnId
+      ) {
+        throw new Error("Conditional admission did not establish a provider turn");
+      }
+      return { status: "accepted", turnId: outcome.value.value.turnId };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async runAgent(

@@ -289,6 +289,7 @@ export function createProviderSnapshotManagerStub(): {
 export function createMessageReceiptsStub(): SessionOptions["messageReceipts"] {
   return {
     send: (input) => input.send(),
+    admit: (input) => input.admit(),
   };
 }
 

@@ -459,7 +459,7 @@ export interface SessionOptions {
   worktreesRoot?: string;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
-  messageReceipts: Pick<MessageReceipts, "send">;
+  messageReceipts: Pick<MessageReceipts, "send" | "admit">;
   creationService: Pick<CreationService, "create" | "subscribe">;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
@@ -795,7 +795,7 @@ export class Session {
   private readonly daemonSession: DaemonSession;
   private readonly hubExecutionController: HubExecutionController | null;
   private readonly workspaceScripts: WorkspaceScriptsService;
-  private readonly messageReceipts: Pick<MessageReceipts, "send">;
+  private readonly messageReceipts: Pick<MessageReceipts, "send" | "admit">;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
 
@@ -2714,6 +2714,19 @@ export class Session {
     }
   }
 
+  private dispatchAgentPromptMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "send_agent_message_request":
+        return this.handleSendAgentMessageRequest(msg);
+      case "agent.message.admit.request":
+        return this.handleAdmitAgentMessageRequest(msg);
+      case "wait_for_finish_request":
+        return this.handleWaitForFinish(msg.agentId, msg.requestId, msg.timeoutMs);
+      default:
+        return undefined;
+    }
+  }
+
   private dispatchAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "fetch_agents_request":
@@ -2736,10 +2749,6 @@ export class Session {
         return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
       case "project.icon.set.request":
         return this.handleProjectIconSetRequest(msg);
-      case "send_agent_message_request":
-        return this.handleSendAgentMessageRequest(msg);
-      case "wait_for_finish_request":
-        return this.handleWaitForFinish(msg.agentId, msg.requestId, msg.timeoutMs);
       case "create_agent_request":
         return this.handleCreateAgentRequest(msg);
       case "resume_agent_request":
@@ -2755,7 +2764,7 @@ export class Session {
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
       default:
-        return undefined;
+        return this.dispatchAgentPromptMessage(msg);
     }
   }
 
@@ -8050,6 +8059,32 @@ export class Session {
       const { provisionalTitle } = resolveCreateAgentTitles({ initialPrompt: text });
       if (provisionalTitle) await this.agentManager.setTitle(agentId, provisionalTitle);
     }
+  }
+
+  private async handleAdmitAgentMessageRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.message.admit.request" }>,
+  ): Promise<void> {
+    // Exact ids only. Do not resolve a title, hydrate, set a mode/title, clear a
+    // permission or restore an archive while preparing conditional admission.
+    const signal = this.delivery.requestSignal;
+    const result = await this.messageReceipts.admit({
+      agentId: msg.agentId,
+      messageId: msg.messageId,
+      request: { text: msg.text, expected: msg.expected, expiresAt: msg.expiresAt },
+      admit: () =>
+        this.agentManager.admitAgentMessage({
+          agentId: msg.agentId,
+          messageId: msg.messageId,
+          text: msg.text,
+          expected: msg.expected,
+          expiresAt: msg.expiresAt,
+          authorize: () => !signal.aborted && this.authorization.allowsInbound(msg),
+        }),
+    });
+    this.emit({
+      type: "agent.message.admit.response",
+      payload: { requestId: msg.requestId, agentId: msg.agentId, messageId: msg.messageId, result },
+    });
   }
 
   private async handleSendAgentMessageRequest(

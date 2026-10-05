@@ -1,3 +1,4 @@
+import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -256,3 +257,65 @@ function toAgentEntrySummary(entry: AgentDirectoryEntrySummaryInput) {
     workspaceName: entry.project.workspaceName ?? null,
   };
 }
+
+test("conditional message RPC preserves one handoff across reconnect and does not restore an archive", async () => {
+  const turns: unknown[] = [];
+  const daemon = await createTestPaseoDaemon({
+    mcpEnabled: false,
+    pluginsEnabled: false,
+    agentClients: createTestAgentClients({
+      onStartTurn: (prompt) => {
+        turns.push(prompt);
+      },
+    }),
+  });
+  let client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws`, appVersion: "0.10.3" });
+  const workdir = mkdtempSync(path.join(os.tmpdir(), "conditional-rpc-work-"));
+  try {
+    await client.connect();
+    expect(client.getLastServerInfoMessage()?.features?.conditionalAgentMessages).toBe(true);
+    await client.fetchAgents();
+    const created = await client.createAgent({ config: { provider: "codex", cwd: workdir } });
+    const snapshot = (await client.fetchAgent({ agentId: created.id }))!.agent;
+    const input = {
+      agentId: created.id,
+      messageId: "one-meaningful-owned-handoff",
+      text: "Review the retained dependency and report the next bounded action.",
+      expected: {
+        provider: snapshot.provider,
+        sessionId: snapshot.persistence!.sessionId,
+        cwd: snapshot.cwd,
+        workspaceId: snapshot.workspaceId ?? null,
+        parentAgentId: snapshot.labels?.["paseo.parent-agent-id"] ?? null,
+        lastUserMessageAt: snapshot.lastUserMessageAt ?? null,
+        updatedAt: snapshot.updatedAt,
+      },
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    };
+    const first = await client.admitAgentMessage(input);
+    expect(first.status).toBe("accepted");
+    await client.waitForFinish(created.id, 10000);
+    expect(turns).toEqual([input.text]);
+    await client.close();
+    client = new DaemonClient({ url: `ws://127.0.0.1:${daemon.port}/ws`, appVersion: "0.10.3" });
+    await client.connect();
+    expect(await client.admitAgentMessage(input)).toEqual(first);
+    expect(turns).toEqual([input.text]);
+    expect(await client.admitAgentMessage({ ...input, text: "Different scope" })).toEqual({
+      status: "rejected",
+      reason: "message_id_conflict",
+    });
+    await daemon.daemon.agentManager.archiveAgent(created.id);
+    expect(await client.admitAgentMessage({ ...input, messageId: "must-not-restore" })).toEqual({
+      status: "rejected",
+      reason: "archived",
+    });
+    const archived = (await client.fetchAgent({ agentId: created.id }))?.agent;
+    expect(typeof archived?.archivedAt).toBe("string");
+    expect(turns).toEqual([input.text]);
+  } finally {
+    await client.close();
+    await daemon.close();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
