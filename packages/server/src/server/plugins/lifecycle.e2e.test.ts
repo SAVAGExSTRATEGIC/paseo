@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, onTestFinished, test } from "vitest";
 import { DaemonClient } from "../test-utils/daemon-client.js";
 import { createTestPaseoDaemon } from "../test-utils/paseo-daemon.js";
+import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 import { resolveDaemonVersion } from "../daemon-version.js";
 
 test("a plugin transforms workspace creation once across receipt replays and observes its committed lifecycle", async () => {
@@ -533,5 +534,65 @@ test("reloading a plugin does not send on a closed IPC channel", async () => {
     await daemon.close();
     await rm(cwd, { recursive: true, force: true });
     await rm(pluginDirectory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a plugin subprocess migrates an existing session's MCP map during refresh", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "paseo-mcp-open-hook-"));
+  const daemon = await createTestPaseoDaemon({
+    daemonVersion: "0.10.3",
+    agentClients: createTestAgentClients({ supportsMcpServers: true }),
+  });
+  const client = new DaemonClient({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    appVersion: "0.10.3",
+  });
+  try {
+    await client.connect();
+    await client.fetchAgents({ subscribe: {} });
+    const scoped = { type: "http" as const, url: "https://example.com/readonly-project" };
+    const created = await client.createAgent({
+      provider: "codex",
+      cwd: directory,
+      title: "Original session",
+      mcpServers: { scoped },
+    });
+    const original = daemon.daemon.agentManager.getAgent(created.id)!;
+    await writeFile(
+      path.join(directory, "paseo-plugin.json"),
+      JSON.stringify({ id: "mcp-migration", requirements: { paseo: ">=0.10.3" } }),
+    );
+    await writeFile(
+      path.join(directory, "index.server.ts"),
+      `
+export default function contribute(server) {
+  return server.before("agent.session_open", ({ request }) => {
+    if (request.purpose === "history") return request;
+    return { ...request, mcpServers: { ...request.mcpServers, fleet: { type: "stdio", command: "fixture-only" } } };
+  });
+}
+`,
+    );
+    await client.patchDaemonConfig({ pluginsEnabled: true });
+    await client.installDirectoryPlugin(directory);
+    const refreshed = await daemon.daemon.agentManager.reloadAgentSession(created.id);
+    await daemon.daemon.agentManager.flush();
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.persistence?.provider).toBe(original.persistence?.provider);
+    expect(refreshed.persistence?.sessionId).toBe(original.persistence?.sessionId);
+    expect(refreshed.persistence?.nativeHandle).toEqual(original.persistence?.nativeHandle);
+    expect(refreshed.config).toEqual({
+      ...original.config,
+      mcpServers: { scoped, fleet: { type: "stdio", command: "fixture-only" } },
+    });
+    const saved = await daemon.daemon.agentStorage.get(created.id);
+    expect(saved?.config.mcpServers).toEqual(refreshed.config.mcpServers);
+    expect(saved?.persistence?.sessionId).toBe(original.persistence?.sessionId);
+    expect(saved?.config.mcpServers).not.toHaveProperty("paseo");
+    await client.archiveAgent(created.id);
+  } finally {
+    await client.close();
+    await daemon.close();
+    await rm(directory, { recursive: true, force: true });
   }
 }, 60_000);
