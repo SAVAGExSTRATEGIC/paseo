@@ -559,11 +559,11 @@ type PluginTurnOutcome =
 
 ### Before hooks
 
-| Name                 | Request fields                                                          | Editable                                |
-| -------------------- | ----------------------------------------------------------------------- | --------------------------------------- |
-| `agent.create`       | `config`, optional `env`                                                | Public agent config except `cwd`; `env` |
-| `agent.session_open` | `agentId`, `workspaceId`, `provider`, `cwd`, `reason`, `purpose`, `env` | Only `env`                              |
-| `workspace.create`   | `source`, optional `title`, `firstAgentContext`                         | Entire explicit creation request        |
+| Name                 | Request fields                                                                                 | Editable                                  |
+| -------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `agent.create`       | `config`, optional `env`                                                                       | Public agent config except `cwd`; `env`   |
+| `agent.session_open` | `agentId`, `workspaceId`, `provider`, `cwd`, `reason`, `purpose`, `env`, optional `mcpServers` | `env`; `mcpServers` for interactive opens |
+| `workspace.create`   | `source`, optional `title`, `firstAgentContext`                                                | Entire explicit creation request          |
 
 **`agent.create.config`** uses `AgentSessionConfig`:
 
@@ -604,8 +604,8 @@ type PluginTurnOutcome =
 Creation request
   → agent.create hooks (plugin-ID order; registration order within each plugin)
   → resolve defaults and validate provider configuration
+  → agent.session_open hooks (same ordering; env and public MCP definitions)
   → derive launch configuration with Paseo runtime tools and daemon prompt
-  → agent.session_open hooks (same ordering; env only)
   → set PASEO_AGENT_ID and PASEO_AGENT_CWD
   → open provider session and save agent configuration
 ```
@@ -619,6 +619,22 @@ Creation request
 
 No automatic deep merge. Later callbacks can overwrite earlier values. Agent configuration is
 saved; environment overrides are not persisted with it.
+
+`agent.session_open.mcpServers` contains the public saved definitions, without Paseo's
+managed runtime server. An interactive hook can return a replacement map to migrate existing
+sessions at their next open. Merge with the incoming map to preserve explicit project scopes.
+Omitting the optional field retains the incoming definitions; an empty map removes all public
+servers. History-only opens reject changes to this map. Provider, directory, identity, reason and
+purpose remain immutable, and this hook cannot alter account options, model, prompts or Goals.
+The daemon adds its managed runtime tools after the hooks and saves the new definitions only
+when provider opening and registration succeed. A failed refresh leaves the prior durable
+configuration closed and retryable. Hooks do not interrupt or reopen already-resident sessions.
+
+A plugin using this capability must require the Paseo release containing it. The daemon supplies
+`mcpServers` even when the map is empty; old daemons omit the field. A guarded plugin may skip
+migration when the field is absent, but must report migration as unavailable on that host.
+Keep migrations idempotent and bounded to a reviewed session plan; do not infer an old
+loadout from missing environment overrides, because those overrides are not durable.
 
 ### Context and cleanup
 

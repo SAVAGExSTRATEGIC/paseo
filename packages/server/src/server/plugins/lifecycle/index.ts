@@ -1,4 +1,5 @@
 import type { AgentStreamEvent, AgentTimelineItem } from "../../agent/agent-sdk-types.js";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { CreateAgentRequestMessageSchema } from "@getpaseo/protocol/messages";
 import type {
@@ -38,6 +39,7 @@ const beforeSchemas = {
       reason: z.enum(["create", "resume", "refresh", "import"]),
       purpose: z.enum(["interactive", "history"]),
       env: z.record(z.string(), z.string()),
+      mcpServers: CreateAgentRequestMessageSchema.shape.config.shape.mcpServers,
     })
     .strict(),
   "workspace.create": WorkspaceCreateRequestSchema.omit({ type: true, requestId: true }).strict(),
@@ -146,8 +148,18 @@ export function validateBeforeResult<Name extends keyof PluginBeforeRequests>(
       previous.reason !== next.reason ||
       previous.purpose !== next.purpose
     ) {
-      throw new Error("agent.session_open hooks can only change env");
+      throw new Error("agent.session_open hooks can only change env and mcpServers");
     }
+    // Older plugins may reconstruct the request without this optional field.
+    // Removing all servers is explicit: return an empty map.
+    if (next.mcpServers === undefined) next.mcpServers = previous.mcpServers;
+    if (
+      previous.purpose === "history" &&
+      !isDeepStrictEqual(previous.mcpServers, next.mcpServers)
+    ) {
+      throw new Error("agent.session_open history hooks cannot change mcpServers");
+    }
+    return next as PluginBeforeRequests[Name];
   }
   if (name === "agent.create") {
     const previous = beforeSchemas["agent.create"].parse(input);

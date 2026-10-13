@@ -193,6 +193,19 @@ Plugin UI runs on desktop and mobile across multiple themes: color every `Text` 
 `theme.colors.foreground` or `theme.colors.foregroundMuted`, and size layout from `layout.compact`.
 See `public-docs/plugins/reference.md`.
 
+### Existing-session MCP migration
+
+The `agent.session_open` before hook can replace public MCP definitions for interactive
+opens. It runs after configuration normalization and before derivation of the daemon's runtime
+server. Use a reviewed plan bound to session identity and expected prior definitions, merge explicit
+scopes, and return unchanged requests for history opens. Saved definitions change only after
+successful provider opening and registration. Existing resident agents acquire the change through
+their normal reload or next open; plugin reload alone does not migrate them. Environment overrides
+are ephemeral, so a missing override is not proof of a previous opt-in or opt-out.
+
+The [public contract](../public-docs/plugins/reference.md#before-hooks) owns field validation,
+legacy omission behavior and the immutable identity boundary.
+
 ### SDK import boundaries
 
 Classify every SDK export before adding it. All client entry points and implementations live under
