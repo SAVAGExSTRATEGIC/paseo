@@ -14,7 +14,11 @@ export type AgentProviderNotice =
 /**
  * Stdio-based MCP server (spawns a subprocess).
  */
+export type McpToolApprovalMode = "auto" | "prompt" | "writes" | "approve";
+
 export interface McpStdioServerConfig {
+  /** Codex approval default for this explicitly selected server. */
+  defaultToolsApprovalMode?: McpToolApprovalMode;
   type: "stdio";
   command: string;
   args?: string[];
@@ -30,6 +34,8 @@ export interface McpStdioServerConfig {
  * HTTP-based MCP server.
  */
 export interface McpHttpServerConfig {
+  /** Codex approval default for this explicitly selected server. */
+  defaultToolsApprovalMode?: McpToolApprovalMode;
   type: "http";
   url: string;
   headers?: Record<string, string>;
@@ -44,6 +50,8 @@ export interface McpHttpServerConfig {
  * SSE-based MCP server (Server-Sent Events over HTTP).
  */
 export interface McpSseServerConfig {
+  /** Codex approval default for this explicitly selected server. */
+  defaultToolsApprovalMode?: McpToolApprovalMode;
   type: "sse";
   url: string;
   headers?: Record<string, string>;

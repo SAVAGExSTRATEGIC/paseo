@@ -2,6 +2,12 @@
 
 This guide walks through adding a new agent provider end-to-end. There are two integration patterns, and this doc covers both.
 
+## Approval defaults for selected MCP servers
+
+Creation hooks may set `defaultToolsApprovalMode` on an explicitly selected MCP server. Codex carries this into `mcp_servers.<name>.default_tools_approval_mode`; transport normalization must preserve it for stdio, HTTP and SSE. The protocol and internal agent SDK both describe this creation contract. Omitted settings retain native defaults, and existing explicit tool-policy grants retain precedence.
+
+This setting changes tool approval behavior for the chosen server; it does not select a connector, grant provider access, or authorize a send. Keep task and account gates in the owning executor. Existing pending turns retain their own approval state.
+
 ## Provider-native session options
 
 `AgentSessionConfig.providerOptions` carries JSON-safe configuration for the selected provider. The
