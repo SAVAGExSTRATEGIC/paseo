@@ -1,0 +1,35 @@
+{
+  "display_information": {
+    "name": "Paseo",
+    "description": "SAVAGE's private Paseo conversation bridge",
+    "background_color": "#17202a"
+  },
+  "features": {
+    "bot_user": { "display_name": "Paseo", "always_online": false },
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "chat:write",
+        "channels:history",
+        "channels:read",
+        "im:history",
+        "im:read",
+        "im:write"
+      ]
+    }
+  },
+  "settings": {
+    "socket_mode_enabled": true,
+    "interactivity": { "is_enabled": true },
+    "event_subscriptions": { "bot_events": ["app_mention", "message.channels", "message.im"] },
+    "org_deploy_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
