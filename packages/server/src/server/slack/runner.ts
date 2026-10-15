@@ -170,7 +170,7 @@ export class ConversationRunner {
         questionContinuation(request, response),
       );
       // The claim is durable before submission. An uncertain result requires inspection, never replay.
-      await agent.respondToPermission({ requestId: decision.requestId, response });
+      await this.host(binding.target).respond(agent, { requestId: decision.requestId, response });
       await this.input.store.resolveControl(command.token);
       text = "Answer submitted to Paseo.";
     } else {
@@ -558,7 +558,7 @@ export class ConversationRunner {
           now: Date.now(),
         });
         await this.input.store.interactionState(receipt.id, "claimed");
-        await agent.respondToPermission({
+        await this.host(binding.target).respond(agent, {
           requestId: decision.requestId,
           response: { behavior: decision.behavior },
         });

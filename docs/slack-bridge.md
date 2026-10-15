@@ -81,7 +81,7 @@ cancel
 answer <question-token> your answer
 ```
 
-Ambiguous selection lists allowed targets and keeps the original task queued. Select a target in a separate reply. A bound conversation cannot switch targets. Attachment requires an idle session in an allowed project and explicit disclosure to the current channel; existing history is not copied. Future task replies will be visible there. One session can bind to one Slack root.
+Ambiguous selection lists allowed targets and keeps the original task queued. Select a target in a separate reply. A bound conversation cannot switch targets. Attachment requires an idle session in an allowed project, the host’s verified provider/model, and explicit disclosure to the current channel; existing history is not copied. Dispatch and permission/question responses recheck the live provider/model and refuse a changed or unverified route. Status and cancellation remain available after a route change. Future task replies will be visible there. One session can bind to one Slack root.
 
 Permission buttons are bound to the owner, conversation, session and exact live request, and expire after ten minutes. Approval applies once. Denial, stale controls and repeat clicks cannot silently authorize another request. Ordinary text such as `approve` is a prompt, not permission.
 

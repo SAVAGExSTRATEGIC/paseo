@@ -1,6 +1,11 @@
 import { WebSocket } from "ws";
 import { createHash } from "node:crypto";
-import { createPaseoApi, type PaseoAgentConfig, type PaseoAgentHandle } from "@getpaseo/client";
+import {
+  createPaseoApi,
+  type PaseoAgentConfig,
+  type PaseoAgentHandle,
+  type PaseoAgentRespondToPermissionOptions,
+} from "@getpaseo/client";
 import { DaemonClient, type DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
 import type { SlackBinding, SlackIntake, SlackTarget } from "./conversations.js";
 import { SlackPolicyError, SlackStateError } from "./conversations.js";
@@ -148,11 +153,29 @@ export class SlackDaemon {
     return agent;
   }
 
+  private requireEligibleRoute(agent: PaseoAgentHandle): void {
+    const snapshot = agent.current();
+    if (!snapshot || `${snapshot.provider}/${snapshot.model}` !== this.config.agentConfig.provider)
+      throw new SlackPolicyError("session_provider_model");
+  }
+
   async send(input: { agent: PaseoAgentHandle; intake: SlackIntake; text: string }): Promise<void> {
     this.requireIdentity();
+    await input.agent.refresh();
+    this.requireEligibleRoute(input.agent);
     await input.agent.send(input.text, {
       messageId: stableOperationId("message", input.intake.id),
     });
+  }
+
+  async respond(
+    agent: PaseoAgentHandle,
+    response: PaseoAgentRespondToPermissionOptions,
+  ): Promise<void> {
+    this.requireIdentity();
+    await agent.refresh();
+    this.requireEligibleRoute(agent);
+    await agent.respondToPermission(response);
   }
 
   async attach(input: { target: SlackTarget; agentId: string }): Promise<PaseoAgentHandle> {
@@ -166,6 +189,7 @@ export class SlackDaemon {
       throw new SlackPolicyError("attachment_project");
     if (agent.activeTurn)
       throw new SlackStateError("Attach an idle session; current work will not be interrupted");
+    this.requireEligibleRoute(agent);
     return agent;
   }
 

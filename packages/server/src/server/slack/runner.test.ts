@@ -403,3 +403,51 @@ it("recovers a real SDK network disconnect with retained work and one native dis
     store.deliveries().findLast((entry) => entry.id.startsWith("slack-final-"))?.text,
   ).toContain("reconnect-once");
 }, 45_000);
+
+it("rejects attachment and dispatch outside the verified provider/model while retaining status and cancellation access", async () => {
+  const { store, host, config, turns } = await fixture();
+  const target = config.policy.targets[0];
+  const message = {
+    id: "route-check",
+    teamId: "T1",
+    userId: "U1",
+    channelId: "C1",
+    rootTs: "7.1",
+    messageTs: "7.1",
+    text: "must not dispatch",
+    isDM: false,
+  };
+  await store.accept(message);
+  const intake = store.pending()[0];
+  const agent = await host.create(intake, target);
+  if (!agent.workspaceId) throw new Error("Missing fixture workspace");
+  await store.bind({
+    key: intake.conversationKey,
+    ownerId: "U1",
+    target,
+    agentId: agent.id,
+    workspaceId: agent.workspaceId,
+  });
+  const binding = store.binding(intake.conversationKey);
+  if (!binding) throw new Error("Missing fixture binding");
+  expect((await host.attach({ target, agentId: agent.id })).id).toBe(agent.id);
+  const otherRoute = new SlackDaemon({
+    ...config.hosts[0],
+    password: "fixture-password",
+    agentConfig: { ...config.hosts[0].agentConfig, provider: "codex/unverified-model" },
+  });
+  cleanup.push(() => otherRoute.close());
+  await otherRoute.connect();
+  await expect(otherRoute.attach({ target, agentId: agent.id })).rejects.toThrow(
+    "session_provider_model",
+  );
+  await expect(otherRoute.send({ agent, intake, text: message.text })).rejects.toThrow(
+    "session_provider_model",
+  );
+  await expect(
+    otherRoute.respond(agent, { requestId: "unverified-request", response: { behavior: "deny" } }),
+  ).rejects.toThrow("session_provider_model");
+  expect((await otherRoute.inspect(binding)).id).toBe(agent.id);
+  await otherRoute.cancel(binding);
+  expect(turns).toEqual([]);
+});
