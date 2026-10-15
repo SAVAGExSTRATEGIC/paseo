@@ -4572,11 +4572,16 @@ export class CodexAppServerAgentSession implements AgentSession {
           advertisedTools: [],
         };
       }
-      const reason =
+      let reason: "timeout" | "unsupported_provider" | "provider_request_failed" =
+        "provider_request_failed";
+      if (
         error instanceof Error &&
         error.message === "Codex app-server request timed out for mcpServerStatus/list"
-          ? "timeout"
-          : "provider_request_failed";
+      ) {
+        reason = "timeout";
+      } else if (error instanceof CodexAppServerRpcError && error.code === -32601) {
+        reason = "unsupported_provider";
+      }
       return { status: "unavailable", server, reason, advertisedTools: [] };
     }
   }

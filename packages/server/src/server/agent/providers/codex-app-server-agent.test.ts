@@ -82,7 +82,7 @@ describe("Codex executable discovery", () => {
   });
 });
 
-import { CodexAppServerClient } from "./codex/app-server-transport.js";
+import { CodexAppServerClient, CodexAppServerRpcError } from "./codex/app-server-transport.js";
 import {
   createFakeCodexAppServer,
   type FakeCodexAppServer,
@@ -333,6 +333,15 @@ test("Codex MCP inspection separates missing catalog, timeout and provider failu
     status: "unavailable",
     server: "router",
     reason: "provider_request_failed",
+    advertisedTools: [],
+  });
+  request.mockRejectedValueOnce(
+    new CodexAppServerRpcError("private provider method detail", -32601, null),
+  );
+  expect(await session.inspectMcpServer!("router")).toEqual({
+    status: "unavailable",
+    server: "router",
+    reason: "unsupported_provider",
     advertisedTools: [],
   });
 });
