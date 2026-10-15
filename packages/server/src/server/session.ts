@@ -687,6 +687,7 @@ export class Session {
       ),
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
+  private readonly browserPassportClientIds = new WeakMap<object, string>();
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
@@ -2223,14 +2224,29 @@ export class Session {
   private async registerBrowserHost(
     request: Extract<SessionInboundMessage, { type: "browser.host.register.request" }>,
     respond = true,
+    source?: object,
   ): Promise<void> {
     if (!this.browserToolsBroker) throw new Error("Browser hosting is unavailable");
+    const passportClientId = source ? this.browserPassportClientIds.get(source) : undefined;
+    if (
+      this.browserToolsBroker.requiresPassport &&
+      (!passportClientId ||
+        !request.passport ||
+        !this.browserToolsBroker.verifyPassportResponse({
+          clientId: passportClientId,
+          challengeId: request.passport.challengeId,
+          signatureBase64: request.passport.signatureBase64,
+        }))
+    ) {
+      throw new Error("Browser host passport verification failed");
+    }
     let unregister: (() => void) | undefined;
     const owner = this.delivery.begin("browser-host", undefined, () => unregister?.());
     try {
       unregister = this.browserToolsBroker.registerClient({
         id: owner.id,
         hostKind: request.hostKind,
+        ...(passportClientId ? { passportClientId } : {}),
         supportedCommands: request.supportedCommands,
         sendBrowserAutomationRequest: (message) => owner.emit(message),
       });
@@ -2249,7 +2265,24 @@ export class Session {
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
-    if (msg.type === "browser.host.register.request") return this.registerBrowserHost(msg);
+    if (msg.type === "browser.host.challenge.request") {
+      if (!this.browserToolsBroker?.requiresPassport || !source) {
+        throw new Error("Browser passport challenge is unavailable");
+      }
+      const passportClientId = this.browserPassportClientIds.get(source) ?? uuidv4();
+      this.browserPassportClientIds.set(source, passportClientId);
+      const challenge = this.browserToolsBroker.issuePassportChallenge(passportClientId);
+      this.emitForSource(
+        {
+          type: "browser.host.challenge.response",
+          payload: { requestId: msg.requestId, challenge },
+        },
+        source,
+      );
+      return Promise.resolve();
+    }
+    if (msg.type === "browser.host.register.request")
+      return this.registerBrowserHost(msg, true, source);
     if (msg.type === "browser.automation.execute.response") {
       if (source)
         this.browserToolsBroker?.receiveResponse(

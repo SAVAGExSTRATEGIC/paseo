@@ -13,6 +13,41 @@ import {
 describe("browser automation protocol integration", () => {
   const browserId = "11111111-1111-4111-8111-111111111111";
 
+  test("browser host passport challenge and signed registration have versioned wire shapes", () => {
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "browser.host.challenge.request",
+        requestId: "request-1",
+      }),
+    ).toMatchObject({ type: "browser.host.challenge.request" });
+    expect(
+      SessionOutboundMessageSchema.parse({
+        type: "browser.host.challenge.response",
+        payload: {
+          requestId: "request-1",
+          challenge: {
+            id: "challenge-1",
+            nonce: "nonce-1",
+            clientId: "client-1",
+            host: "example.local",
+            chromePath: "/Applications/Google Chrome.app",
+            profileDirectory: "Profile 3",
+            expiresAt: 1000,
+          },
+        },
+      }),
+    ).toMatchObject({ type: "browser.host.challenge.response" });
+    expect(
+      SessionInboundMessageSchema.parse({
+        type: "browser.host.register.request",
+        requestId: "request-2",
+        hostKind: "chrome extension",
+        supportedCommands: ["list_tabs"],
+        passport: { challengeId: "challenge-1", signatureBase64: "c2ln" },
+      }),
+    ).toMatchObject({ passport: { challengeId: "challenge-1" } });
+  });
+
   test("browser host capability parses supported commands in hello", () => {
     expect(
       WSHelloMessageSchema.parse({

@@ -2310,6 +2310,29 @@ export class DaemonClient {
     );
   }
 
+  async requestBrowserHostChallenge(): Promise<
+    Extract<
+      SessionOutboundMessage,
+      { type: "browser.host.challenge.response" }
+    >["payload"]["challenge"]
+  > {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "browser.host.challenge.request",
+      requestId,
+    });
+    return this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "browser.host.challenge.response" &&
+        response.payload.requestId === requestId
+          ? response.payload.challenge
+          : null,
+    });
+  }
+
   observeEvents(
     events: SessionEventSubscription[],
     options?: { signal?: AbortSignal; notifications?: boolean },

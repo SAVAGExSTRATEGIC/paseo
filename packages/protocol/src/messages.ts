@@ -3172,11 +3172,33 @@ export const SessionEventsSetSubscriptionResponseSchema = z.object({
   payload: z.object({ requestId: z.string(), subscriptionId: z.string().optional() }),
 });
 
+export const BrowserHostChallengeRequestSchema = z.object({
+  type: z.literal("browser.host.challenge.request"),
+  requestId: z.string(),
+});
+export const BrowserHostChallengeResponseSchema = z.object({
+  type: z.literal("browser.host.challenge.response"),
+  payload: z.object({
+    requestId: z.string(),
+    challenge: z.object({
+      id: z.string().min(1),
+      nonce: z.string().min(1),
+      clientId: z.string().min(1),
+      host: z.string().min(1),
+      chromePath: z.string().min(1),
+      profileDirectory: z.string().min(1),
+      expiresAt: z.number().int().positive(),
+    }),
+  }),
+});
 export const BrowserHostRegisterRequestSchema = z.object({
   type: z.literal("browser.host.register.request"),
   requestId: z.string(),
   hostKind: z.string().min(1),
   supportedCommands: z.array(z.enum(BROWSER_AUTOMATION_COMMAND_NAMES)).min(1),
+  passport: z
+    .object({ challengeId: z.string().min(1), signatureBase64: z.string().min(1) })
+    .optional(),
 });
 export const BrowserHostRegisterResponseSchema = z.object({
   type: z.literal("browser.host.register.response"),
@@ -3194,6 +3216,7 @@ export const SubscriptionReleaseResponseSchema = z.object({
 });
 
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+  BrowserHostChallengeRequestSchema,
   BrowserHostRegisterRequestSchema,
   SubscriptionReleaseRequestSchema,
   SessionEventsSetSubscriptionRequestSchema,
@@ -6818,6 +6841,7 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  BrowserHostChallengeResponseSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

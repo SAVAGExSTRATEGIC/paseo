@@ -8,10 +8,12 @@ import {
   type BrowserAutomationExecuteResponse,
 } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import { browserToolsFailure, type BrowserToolsResponsePayload } from "./errors.js";
+import type { BrowserPassportChallenge, BrowserPassportVerifier } from "./passport/verifier.js";
 
 export interface BrowserHostClient {
   id: string;
   hostKind: string;
+  passportClientId?: string;
   supportedCommands: readonly BrowserAutomationCommandName[];
   sendBrowserAutomationRequest(request: BrowserAutomationExecuteRequest): void | Promise<void>;
 }
@@ -42,6 +44,7 @@ export interface BrowserToolsBrokerOptions {
   defaultTimeoutMs?: number;
   createRequestId?: () => string;
   admitHost?: (client: BrowserHostClient) => boolean;
+  passportVerifier?: BrowserPassportVerifier;
 }
 
 const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
@@ -50,6 +53,7 @@ export class BrowserToolsBroker {
   private readonly defaultTimeoutMs: number;
   private readonly createRequestId: () => string;
   private readonly admitHost?: (client: BrowserHostClient) => boolean;
+  private readonly passportVerifier?: BrowserPassportVerifier;
   private readonly clients = new Map<string, RegisteredBrowserHost>();
   private readonly pending = new Map<string, PendingBrowserToolsRequest>();
   private readonly browserHostByBrowserId = new Map<string, string>();
@@ -57,9 +61,35 @@ export class BrowserToolsBroker {
   private registrationSequence = 0;
 
   public constructor(options: BrowserToolsBrokerOptions) {
+    if (options.admitHost && options.passportVerifier) {
+      throw new Error("Browser broker accepts only one host admission strategy");
+    }
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_BROWSER_TOOLS_TIMEOUT_MS;
     this.createRequestId = options.createRequestId ?? (() => `browser_${randomUUID()}`);
-    this.admitHost = options.admitHost;
+    const passportVerifier = options.passportVerifier;
+    this.passportVerifier = passportVerifier;
+    this.admitHost = passportVerifier
+      ? (client) =>
+          client.passportClientId !== undefined &&
+          passportVerifier.consumeVerifiedClient(client.passportClientId)
+      : options.admitHost;
+  }
+
+  public get requiresPassport(): boolean {
+    return Boolean(this.passportVerifier);
+  }
+
+  public issuePassportChallenge(clientId: string): BrowserPassportChallenge {
+    if (!this.passportVerifier) throw new Error("Browser passport is not configured");
+    return this.passportVerifier.issueChallenge(clientId);
+  }
+
+  public verifyPassportResponse(input: {
+    challengeId: string;
+    clientId: string;
+    signatureBase64: string;
+  }): boolean {
+    return this.passportVerifier?.verifyResponse(input) ?? false;
   }
 
   public registerClient(client: BrowserHostClient): () => void {
