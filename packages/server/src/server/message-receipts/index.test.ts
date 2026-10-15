@@ -75,3 +75,64 @@ test("failed local message preparation does not leave an ambiguous receipt", asy
   await requests.send(input);
   expect(sends).toBe(1);
 });
+
+test("conditional admission keeps one accepted result across concurrent retries and reconstruction", async () => {
+  const { requests, directory } = await fixture();
+  let admissions = 0;
+  const input = {
+    agentId: "agent",
+    messageId: "conditional-arrival",
+    request: { text: "Review owned work" },
+    admit: async () => {
+      admissions++;
+      return { status: "accepted" as const, turnId: "turn-1" };
+    },
+  };
+  expect(await Promise.all([requests.admit(input), requests.admit(input)])).toEqual([
+    { status: "accepted", turnId: "turn-1" },
+    { status: "accepted", turnId: "turn-1" },
+  ]);
+  expect(await new MessageReceipts(directory).admit(input)).toEqual({
+    status: "accepted",
+    turnId: "turn-1",
+  });
+  expect(admissions).toBe(1);
+});
+
+test("conditional uncertainty survives restart without another provider attempt", async () => {
+  const { requests, directory } = await fixture();
+  let calls = 0;
+  const input = {
+    agentId: "recipient",
+    messageId: "uncertain",
+    request: { text: "owned task" },
+    admit: async () => {
+      calls++;
+      throw new Error("Provider may have accepted before disconnect");
+    },
+  };
+  expect(await requests.admit(input)).toEqual({ status: "outcome_unknown" });
+  expect(await new MessageReceipts(directory).admit(input)).toEqual({ status: "outcome_unknown" });
+  expect(calls).toBe(1);
+});
+
+test("conditional changed payload conflicts and a refusal does not become an eventual send", async () => {
+  const { requests } = await fixture();
+  let calls = 0;
+  const input = {
+    agentId: "recipient",
+    messageId: "bounded",
+    request: { text: "first" },
+    admit: async () => {
+      calls++;
+      return { status: "rejected" as const, reason: "busy" as const };
+    },
+  };
+  expect(await requests.admit(input)).toEqual({ status: "rejected", reason: "busy" });
+  expect(await requests.admit({ ...input, request: { text: "changed" } })).toEqual({
+    status: "rejected",
+    reason: "message_id_conflict",
+  });
+  expect(await requests.admit(input)).toEqual({ status: "rejected", reason: "busy" });
+  expect(calls).toBe(1);
+});

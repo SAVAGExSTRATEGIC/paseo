@@ -296,9 +296,10 @@ export async function waitForAgentRunStartWithTimeout(
  * Full send-prompt orchestration: (optional unarchive) → load → (optional
  * mode change) → start run.
  *
- * Every surface that sends a prompt to an agent (Session/WS, MCP, CLI-through-MCP,
+ * Every ordinary interactive surface that sends a prompt (Session/WS, MCP, CLI-through-MCP,
  * chat mentions, notify-on-finish) MUST go through this so behavior can never
- * drift between them.
+ * drift between them. Explicit conditional admission has a separate manager-owned
+ * reservation path and must never fall back to this replacing/unarchiving path.
  *
  * When `unarchive` is false and the agent is archived, the call is a silent
  * no-op (returns the normal turn-start disposition) — the agent is not run.

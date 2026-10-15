@@ -1360,6 +1360,47 @@ export const SendAgentMessageRequestSchema = z.object({
   attachments: AgentAttachmentsSchema,
 });
 
+// A separate, capability-gated operation cannot be silently treated as an
+// ordinary interrupting send by an older daemon.
+export const AgentMessageAdmissionExpectationSchema = z.object({
+  provider: z.string(),
+  sessionId: z.string(),
+  cwd: z.string(),
+  workspaceId: z.string().nullable(),
+  parentAgentId: z.string().nullable(),
+  lastUserMessageAt: z.string().nullable(),
+  updatedAt: z.string(),
+});
+
+export const AgentMessageAdmissionResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("accepted"), turnId: z.string() }),
+  z.object({
+    status: z.literal("rejected"),
+    reason: z.enum([
+      "not_found",
+      "archived",
+      "not_idle",
+      "busy",
+      "permission_pending",
+      "scope_changed",
+      "expired",
+      "not_authorized",
+      "message_id_conflict",
+    ]),
+  }),
+  z.object({ status: z.literal("outcome_unknown") }),
+]);
+
+export const AdmitAgentMessageRequestSchema = z.object({
+  type: z.literal("agent.message.admit.request"),
+  requestId: z.string(),
+  agentId: z.string().min(1),
+  messageId: z.string().min(1).max(256),
+  text: z.string().min(1).max(65536),
+  expected: AgentMessageAdmissionExpectationSchema,
+  expiresAt: z.string(),
+});
+
 export const WaitForFinishRequestSchema = z.object({
   type: z.literal("wait_for_finish_request"),
   requestId: z.string(),
@@ -3205,6 +3246,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceRecoveryRestoreRequestSchema,
   SetVoiceModeMessageSchema,
   SendAgentMessageRequestSchema,
+  AdmitAgentMessageRequestSchema,
   WaitForFinishRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
@@ -3693,6 +3735,9 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
+        // COMPAT(conditionalAgentMessages): added after v0.10.3; remove the gate
+        // after 2027-04-05 only when the supported daemon floor includes it.
+        conditionalAgentMessages: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -4931,6 +4976,16 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     agentId: z.string(),
     accepted: z.boolean(),
     error: z.string().nullable(),
+  }),
+});
+
+export const AdmitAgentMessageResponseSchema = z.object({
+  type: z.literal("agent.message.admit.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    messageId: z.string(),
+    result: AgentMessageAdmissionResultSchema,
   }),
 });
 
@@ -6907,6 +6962,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WorkspaceClearAttentionResponseSchema,
   WorkspaceMarkUnreadResponseSchema,
   SendAgentMessageResponseMessageSchema,
+  AdmitAgentMessageResponseSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
@@ -7227,6 +7283,8 @@ export type ProjectListRequestMessage = z.infer<typeof ProjectListRequestMessage
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type AgentForkContextRequestMessage = z.infer<typeof AgentForkContextRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
+export type AdmitAgentMessageRequest = z.infer<typeof AdmitAgentMessageRequestSchema>;
+export type AgentMessageAdmissionResult = z.infer<typeof AgentMessageAdmissionResultSchema>;
 export type WaitForFinishRequest = z.infer<typeof WaitForFinishRequestSchema>;
 export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMessageSchema>;
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;

@@ -2,6 +2,26 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  AgentMessageAdmissionResultSchema,
+  type AgentMessageAdmissionResult,
+} from "@getpaseo/protocol/messages";
+
+const AdmissionReceiptSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("pending"), fingerprint: z.string(), agentId: z.string() }),
+  z.object({
+    state: z.literal("resolved"),
+    fingerprint: z.string(),
+    agentId: z.string(),
+    result: AgentMessageAdmissionResultSchema,
+  }),
+]);
+interface AdmitMessageInput {
+  agentId: string;
+  messageId: string;
+  request: unknown;
+  admit: () => Promise<AgentMessageAdmissionResult>;
+}
 import { writeJsonFileAtomic } from "../atomic-file.js";
 
 const ReceiptSchema = z.object({
@@ -20,7 +40,55 @@ interface SendMessageInput {
 /** Owns message delivery receipts; creation is owned by CreationService. */
 export class MessageReceipts {
   private readonly pending = new Map<string, Promise<void>>();
+  private readonly admissions = new Map<string, Promise<AgentMessageAdmissionResult>>();
   constructor(private readonly directory: string) {}
+
+  admit(input: AdmitMessageInput): Promise<AgentMessageAdmissionResult> {
+    const key = digest(["admit", input.agentId, input.messageId]);
+    const previous = this.admissions.get(key);
+    const result = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() =>
+      this.admitOnce(key, input),
+    );
+    this.admissions.set(key, result);
+    void result
+      .finally(() => {
+        if (this.admissions.get(key) === result) this.admissions.delete(key);
+      })
+      .catch(() => undefined);
+    return result;
+  }
+
+  private async admitOnce(
+    key: string,
+    input: AdmitMessageInput,
+  ): Promise<AgentMessageAdmissionResult> {
+    const file = path.join(this.directory, `${key}.json`);
+    const fingerprint = digest(input.request);
+    let existing: z.infer<typeof AdmissionReceiptSchema> | null;
+    try {
+      existing = AdmissionReceiptSchema.parse(JSON.parse(await readFile(file, "utf8")));
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      existing = null;
+    }
+    if (existing) {
+      if (existing.fingerprint !== fingerprint)
+        return { status: "rejected", reason: "message_id_conflict" };
+      return existing.state === "resolved" ? existing.result : { status: "outcome_unknown" };
+    }
+    const receipt = { fingerprint, agentId: input.agentId };
+    // Persist uncertainty before touching the provider. Rejection is a terminal
+    // result too: a later attempt needs a new id and fresh preconditions.
+    await writeJsonFileAtomic(file, { ...receipt, state: "pending" });
+    try {
+      const result = await input.admit();
+      await writeJsonFileAtomic(file, { ...receipt, state: "resolved", result });
+      return result;
+    } catch {
+      // Neither provider failure nor failure to persist acceptance authorizes replay.
+      return { status: "outcome_unknown" };
+    }
+  }
 
   send(input: SendMessageInput): Promise<void> {
     // Preserve the existing on-disk identity and shape across daemon upgrades.

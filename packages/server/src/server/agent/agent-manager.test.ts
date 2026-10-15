@@ -11606,3 +11606,263 @@ test.each(["codex", "claude", "kimi", "grok"])(
     }
   },
 );
+function conditionalExpectation(agent: ManagedAgent) {
+  return {
+    provider: agent.provider,
+    sessionId: agent.persistence!.sessionId,
+    cwd: agent.cwd,
+    workspaceId: agent.workspaceId ?? null,
+    parentAgentId: agent.labels[PARENT_AGENT_ID_LABEL] ?? null,
+    lastUserMessageAt: agent.lastUserMessageAt?.toISOString() ?? null,
+    updatedAt: agent.updatedAt.toISOString(),
+  };
+}
+
+test("conditional native message preserves identity and accepts a resident idle turn", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "conditional-admission-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new TestAgentClient();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const expected = conditionalExpectation(agent);
+    const finished = waitForAgentLifecycle(manager, agent.id, "idle");
+    expect(
+      await manager.admitAgentMessage({
+        agentId: agent.id,
+        messageId: "conditional-one",
+        text: "Review the existing handoff.",
+        expected,
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        authorize: () => true,
+      }),
+    ).toEqual({ status: "accepted", turnId: "turn-1" });
+    await finished;
+    expect(manager.getAgent(agent.id)?.persistence?.sessionId).toBe(expected.sessionId);
+    expect(manager.getAgent(agent.id)?.labels).toEqual(agent.labels);
+    expect(client.resumeOverrides).toEqual([]);
+    await manager.closeAgent(agent.id);
+  } finally {
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+class ConditionalProbeSession extends TestAgentSession {
+  readonly started = deferred<void>();
+  readonly release = deferred<void>();
+  starts = 0;
+  interruptions = 0;
+  permissionResponses = 0;
+  override async startTurn() {
+    this.starts++;
+    this.started.resolve();
+    await this.release.promise;
+    return { turnId: "conditional-turn" };
+  }
+  override async interrupt() {
+    this.interruptions++;
+  }
+  override async respondToPermission() {
+    this.permissionResponses++;
+  }
+  finish() {
+    this.pushEvent({ type: "turn_completed", provider: "codex", turnId: "conditional-turn" });
+  }
+}
+class ConditionalProbeClient extends TestAgentClient {
+  probe: ConditionalProbeSession | null = null;
+  override async createSession(config: AgentSessionConfig) {
+    this.probe = new ConditionalProbeSession(config);
+    return this.probe;
+  }
+}
+async function conditionalFixture() {
+  const directory = mkdtempSync(join(tmpdir(), "conditional-native-"));
+  const storage = new AgentStorage(join(directory, "agents"), logger);
+  const client = new ConditionalProbeClient();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const agent = await manager.createAgent({ provider: "codex", cwd: directory }, undefined, {
+    workspaceId: undefined,
+  });
+  const probe = client.probe!;
+  const input = {
+    agentId: agent.id,
+    messageId: "original",
+    text: "Review existing evidence.",
+    expected: conditionalExpectation(agent),
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    authorize: () => true,
+  };
+  return {
+    manager,
+    agent,
+    client,
+    probe,
+    storage,
+    input,
+    async cleanup() {
+      probe.release.resolve();
+      probe.finish();
+      await manager.closeAgent(agent.id);
+      await storage.flush();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+test("conditional native admission cannot replace a user turn reserved before it", async () => {
+  const f = await conditionalFixture();
+  try {
+    const user = f.manager.streamAgent(f.agent.id, "A user-owned turn");
+    const next = user.next();
+    await f.probe.started.promise;
+    expect(await f.manager.admitAgentMessage(f.input)).toEqual({
+      status: "rejected",
+      reason: "busy",
+    });
+    expect(f.probe.starts).toBe(1);
+    expect(f.probe.interruptions).toBe(0);
+    f.probe.release.resolve();
+    await next;
+    const idle = waitForAgentLifecycle(f.manager, f.agent.id, "idle");
+    f.probe.finish();
+    await idle;
+    await user.return();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("conditional native admission refuses running lifecycle without active-turn bookkeeping", async () => {
+  const f = await conditionalFixture();
+  try {
+    const internals = f.manager as unknown as { agents: Map<string, ManagedAgent> };
+    const resident = internals.agents.get(f.agent.id)!;
+    resident.lifecycle = "running";
+    f.probe.release.resolve();
+    expect(f.manager.getAgent(f.agent.id)?.lifecycle).toBe("running");
+    expect(resident.activeTurnId).toBeNull();
+    expect(resident.activeForegroundTurnId).toBeNull();
+    expect(await f.manager.admitAgentMessage(f.input)).toEqual({
+      status: "rejected",
+      reason: "busy",
+    });
+    expect(f.probe.starts).toBe(0);
+    expect(f.probe.interruptions).toBe(0);
+    expect(f.probe.permissionResponses).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("conditional native admission reserves one turn and rejects a concurrent admission", async () => {
+  const f = await conditionalFixture();
+  try {
+    const first = f.manager.admitAgentMessage(f.input);
+    await f.probe.started.promise;
+    const second = f.manager.admitAgentMessage({ ...f.input, messageId: "different" });
+    f.probe.release.resolve();
+    expect(await first).toEqual({ status: "accepted", turnId: "conditional-turn" });
+    expect(await second).toEqual({ status: "rejected", reason: "busy" });
+    expect(f.probe.starts).toBe(1);
+    expect(f.probe.interruptions).toBe(0);
+    const idle = waitForAgentLifecycle(f.manager, f.agent.id, "idle");
+    f.probe.finish();
+    await idle;
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("conditional native admission preserves a pending permission instead of answering it", async () => {
+  const f = await conditionalFixture();
+  try {
+    f.probe.pushEvent({
+      type: "permission_requested",
+      provider: "codex",
+      request: { id: "permission-original", name: "shell", input: { command: "owned" } },
+    });
+    expect(await f.manager.admitAgentMessage(f.input)).toEqual({
+      status: "rejected",
+      reason: "permission_pending",
+    });
+    expect(f.manager.getAgent(f.agent.id)?.pendingPermissions.has("permission-original")).toBe(
+      true,
+    );
+    expect(f.probe.permissionResponses).toBe(0);
+    expect(f.probe.starts).toBe(0);
+    expect(f.probe.interruptions).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("conditional native admission refuses an archived or closed recipient without hydration", async () => {
+  const f = await conditionalFixture();
+  try {
+    await f.manager.closeAgent(f.agent.id);
+    expect(await f.manager.admitAgentMessage(f.input)).toEqual({
+      status: "rejected",
+      reason: "not_idle",
+    });
+    await f.manager.archiveSnapshot(f.agent.id, new Date().toISOString());
+    expect(await f.manager.admitAgentMessage(f.input)).toEqual({
+      status: "rejected",
+      reason: "archived",
+    });
+    expect((await f.storage.get(f.agent.id))?.archivedAt === null).toBe(false);
+    expect(f.client.resumeOverrides).toEqual([]);
+    expect(f.probe.starts).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+for (const field of [
+  "provider",
+  "sessionId",
+  "cwd",
+  "workspaceId",
+  "parentAgentId",
+  "lastUserMessageAt",
+  "updatedAt",
+] as const) {
+  test(`conditional native admission refuses changed ${field}`, async () => {
+    const f = await conditionalFixture();
+    try {
+      expect(
+        await f.manager.admitAgentMessage({
+          ...f.input,
+          expected: { ...f.input.expected, [field]: "changed" },
+        }),
+      ).toEqual({ status: "rejected", reason: "scope_changed" });
+      expect(f.probe.starts).toBe(0);
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
+
+test("conditional native admission checks expiry and current authorization at its boundary", async () => {
+  const f = await conditionalFixture();
+  try {
+    expect(await f.manager.admitAgentMessage({ ...f.input, expiresAt: "invalid" })).toEqual({
+      status: "rejected",
+      reason: "expired",
+    });
+    expect(
+      await f.manager.admitAgentMessage({ ...f.input, expiresAt: "2000-01-01T00:00:00Z" }),
+    ).toEqual({ status: "rejected", reason: "expired" });
+    expect(await f.manager.admitAgentMessage({ ...f.input, authorize: () => false })).toEqual({
+      status: "rejected",
+      reason: "not_authorized",
+    });
+    expect(f.probe.starts).toBe(0);
+    expect(f.probe.interruptions).toBe(0);
+  } finally {
+    await f.cleanup();
+  }
+});
