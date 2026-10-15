@@ -16,6 +16,85 @@ function terminalEvents(events: AgentStreamEvent[]) {
 }
 
 describe("OpenCode v2 session lifecycle", () => {
+  test("inspects a configured MCP server without starting a model turn", async () => {
+    const harness = new V2Harness();
+    const client = new OpenCodeV2AgentClient({
+      logger: createTestLogger(),
+      runtime: harness.runtime,
+    });
+    const session = await client.createSession({
+      provider: "opencode",
+      cwd: "/tmp/project",
+      mcpServers: { router: { type: "http", url: "https://example.test/mcp" } },
+    });
+    try {
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "observed",
+        server: "router",
+        connection: "connected",
+        auth: "unknown",
+        advertisedTools: [],
+        toolCatalog: "not_exposed_by_provider_api",
+      });
+      expect(await session.inspectMcpServer?.("other")).toEqual({
+        status: "not_configured",
+        server: "other",
+        advertisedTools: [],
+      });
+      expect(harness.prompts).toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("redacts OpenCode MCP authentication and transport failures", async () => {
+    const harness = new V2Harness();
+    const client = new OpenCodeV2AgentClient({
+      logger: createTestLogger(),
+      runtime: harness.runtime,
+    });
+    const session = await client.createSession({
+      provider: "opencode",
+      cwd: "/tmp/project",
+      mcpServers: { router: { type: "http", url: "https://example.test/mcp" } },
+    });
+    try {
+      const list = harness.api.mcp.list;
+      harness.api.mcp.list = async (input) => {
+        const result = await list(input);
+        return {
+          ...result,
+          data: [
+            {
+              name: "router",
+              status: { status: "needs_auth", error: "private identity and token" },
+            },
+          ],
+        };
+      };
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "observed",
+        server: "router",
+        connection: "needs_auth",
+        auth: "needs_auth",
+        advertisedTools: [],
+        toolCatalog: "not_exposed_by_provider_api",
+      });
+      harness.api.mcp.list = async () => {
+        throw new Error("private transport detail");
+      };
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "unavailable",
+        server: "router",
+        reason: "provider_request_failed",
+        advertisedTools: [],
+      });
+      expect(harness.prompts).toEqual([]);
+    } finally {
+      await session.close();
+    }
+  });
+
   test("completes from execution events without a long-lived HTTP wait", async () => {
     const harness = new V2Harness();
     harness.prompt = async (input) => {
