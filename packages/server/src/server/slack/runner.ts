@@ -171,6 +171,7 @@ export class ConversationRunner {
       );
       // The claim is durable before submission. An uncertain result requires inspection, never replay.
       await agent.respondToPermission({ requestId: decision.requestId, response });
+      await this.input.store.resolveControl(command.token);
       text = "Answer submitted to Paseo.";
     } else {
       if (binding)
@@ -546,6 +547,7 @@ export class ConversationRunner {
         const requestId = this.input.store.controlRequestId(receipt.token, receipt.key);
         const request = agent.pendingPermissions?.find((entry) => entry.id === requestId);
         if (!request) {
+          await this.input.store.resolveControl(receipt.token);
           await this.input.store.interactionState(receipt.id, "resolved");
           continue;
         }
@@ -560,6 +562,7 @@ export class ConversationRunner {
           requestId: decision.requestId,
           response: { behavior: decision.behavior },
         });
+        await this.input.store.resolveControl(receipt.token);
         await this.input.store.interactionState(receipt.id, "resolved");
       } catch (error) {
         if (error instanceof SlackPolicyError || error instanceof SlackStateError) {

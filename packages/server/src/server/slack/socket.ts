@@ -1,10 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { z } from "zod";
+import { SlackPolicyError } from "./conversations.js";
 import { SlackApi } from "./slack-api.js";
 
 const EnvelopeSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("hello") }),
+  z.object({ type: z.literal("hello"), connection_info: z.object({ app_id: z.string() }) }),
   z.object({ type: z.literal("disconnect"), reason: z.string() }),
   z.object({
     type: z.enum(["events_api", "interactive"]),
@@ -13,6 +14,7 @@ const EnvelopeSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export interface SocketConsumer {
+  appId: string;
   accept(type: "events_api" | "interactive", payload: unknown, envelopeId: string): Promise<void>;
   state(connected: boolean): void;
   failure(code: string): void;
@@ -20,7 +22,7 @@ export interface SocketConsumer {
 
 /** Acknowledges only after the consumer has committed intake or rejected it by policy. */
 export async function runSocketMode(
-  api: SlackApi,
+  api: Pick<SlackApi, "openSocket">,
   consumer: SocketConsumer,
   signal: AbortSignal,
 ): Promise<void> {
@@ -30,7 +32,8 @@ export async function runSocketMode(
       const url = await api.openSocket();
       await socketConnection({ url, consumer, signal });
       failures = 0;
-    } catch {
+    } catch (error) {
+      if (error instanceof SlackPolicyError) throw error;
       if (signal.aborted) break;
       failures += 1;
       consumer.failure("slack_socket_disconnected");
@@ -56,6 +59,13 @@ function socketConnection(input: ConnectionInput): Promise<void> {
     let queue = Promise.resolve();
     let pongReceived = true;
     let failed = false;
+    let verified = false;
+    let policyError: SlackPolicyError | undefined;
+    const rejectIdentity = () => {
+      policyError = new SlackPolicyError("slack_socket_identity");
+      input.consumer.state(false);
+      socket.close(1008);
+    };
     const stop = () => socket.close(1000);
     input.signal.addEventListener("abort", stop, { once: true });
     if (input.signal.aborted) stop();
@@ -79,6 +89,10 @@ function socketConnection(input: ConnectionInput): Promise<void> {
       input.signal.removeEventListener("abort", stop);
       // Finish durable intake already received before releasing exclusive state ownership.
       queue.then(() => {
+        if (policyError) {
+          reject(policyError);
+          return undefined;
+        }
         if (failed && !input.signal.aborted) {
           reject(new Error("Slack socket error"));
           return undefined;
@@ -97,16 +111,29 @@ function socketConnection(input: ConnectionInput): Promise<void> {
       }
       const parsed = EnvelopeSchema.safeParse(raw);
       if (!parsed.success) {
+        if (!verified) {
+          rejectIdentity();
+          return;
+        }
         input.consumer.failure("unsupported_socket_envelope");
         return;
       }
       const envelope = parsed.data;
       if (envelope.type === "hello") {
+        if (envelope.connection_info.app_id !== input.consumer.appId) {
+          rejectIdentity();
+          return;
+        }
+        verified = true;
         input.consumer.state(true);
         return;
       }
       if (envelope.type === "disconnect") {
         socket.close(1000);
+        return;
+      }
+      if (!verified || policyError) {
+        rejectIdentity();
         return;
       }
       queue = queue

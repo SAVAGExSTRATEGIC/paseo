@@ -1,0 +1,30 @@
+{
+  "appId": "AREPLACE",
+  "botUserId": "UREPLACE",
+  "dataDirectory": "/absolute/private/paseo-slack/state",
+  "healthPort": 6768,
+  "policy": {
+    "teamId": "TREPLACE",
+    "userIds": ["UREPLACE_OWNER"],
+    "channelIds": ["CREPLACE_ALLOWED_CHANNEL"],
+    "allowDMs": true,
+    "targets": [
+      {
+        "host": "primary",
+        "project": "paseo",
+        "projectId": "REPLACE_FROM_PROJECT_CATALOG",
+        "cwd": "/absolute/allowed-project",
+        "serverId": "srv_REPLACE"
+      }
+    ]
+  },
+  "hosts": [
+    {
+      "name": "primary",
+      "url": "ws://127.0.0.1:6767/ws",
+      "serverId": "srv_REPLACE",
+      "passwordEnv": "PASEO_SLACK_DAEMON_PASSWORD",
+      "agentConfig": { "provider": "codex/MODEL_FROM_CATALOG", "modeId": "default" }
+    }
+  ]
+}

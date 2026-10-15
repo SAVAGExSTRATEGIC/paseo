@@ -1,6 +1,7 @@
+import { WebSocket } from "ws";
 import { createHash } from "node:crypto";
 import { createPaseoApi, type PaseoAgentConfig, type PaseoAgentHandle } from "@getpaseo/client";
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { DaemonClient, type DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
 import type { SlackBinding, SlackIntake, SlackTarget } from "./conversations.js";
 import { SlackPolicyError, SlackStateError } from "./conversations.js";
 
@@ -16,12 +17,39 @@ export function stableOperationId(namespace: string, identity: string): string {
   return `slack-${namespace}-${createHash("sha256").update(identity).digest("hex")}`;
 }
 
+/** Accept only an explicit HTTP auth denial or Paseo's documented 4401 close. */
+async function requireAnonymousRejection(url: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(url, { handshakeTimeout: 5000 });
+    let settled = false;
+    const timer = setTimeout(() => finish(false), 5000);
+    function finish(denied: boolean) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.terminate();
+      if (denied) resolve();
+      else reject(new SlackPolicyError("daemon_authentication_not_enforced"));
+    }
+    socket.on("unexpected-response", (_request, response) => {
+      response.resume();
+      finish(response.statusCode === 401 || response.statusCode === 403);
+    });
+    socket.on("error", () => finish(false));
+    socket.on("close", (code) => finish(code === 4401));
+  });
+}
+
 /** Owns one authenticated private daemon connection, separate from its agent runtime. */
 export class SlackDaemon {
   private driver: DaemonClient;
-  readonly api;
+  private authenticatedInfo: ReturnType<DaemonClient["getLastServerInfoMessage"]> = null;
+  private readonly api;
 
-  constructor(private config: SlackHostConfig) {
+  constructor(
+    private config: SlackHostConfig,
+    webSocketFactory?: DaemonClientConfig["webSocketFactory"],
+  ) {
     const endpoint = new URL(config.url);
     const privateHost =
       endpoint.hostname === "127.0.0.1" ||
@@ -36,6 +64,7 @@ export class SlackDaemon {
       throw new SlackPolicyError("daemon_authentication_required");
     this.driver = new DaemonClient({
       ...config,
+      webSocketFactory,
       // Only the bridge's fixed event codes and hashed correlations enter operational logs.
       logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       clientId: "savage-slack-bridge",
@@ -47,13 +76,21 @@ export class SlackDaemon {
 
   async connect(): Promise<void> {
     await this.driver.connect();
-    this.requireIdentity();
+    this.requireIdentity(false);
+    const info = this.driver.getLastServerInfoMessage();
+    if (this.authenticatedInfo !== info) {
+      this.authenticatedInfo = null;
+      await requireAnonymousRejection(this.config.url);
+      this.authenticatedInfo = info;
+    }
   }
 
-  private requireIdentity(): void {
+  private requireIdentity(requireAuthentication = true): void {
     const info = this.driver.getLastServerInfoMessage();
-    if (!info || info.serverId !== this.config.serverId)
-      throw new SlackPolicyError("daemon_identity");
+    if (!info) throw new Error("Paseo connection temporarily unavailable");
+    if (info.serverId !== this.config.serverId) throw new SlackPolicyError("daemon_identity");
+    if (requireAuthentication && this.authenticatedInfo !== info)
+      throw new Error("Paseo authentication verification pending");
     if (info.features?.agentRequestReceipts !== true)
       throw new SlackStateError("Update Paseo: durable request receipts are required");
   }

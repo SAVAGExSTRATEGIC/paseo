@@ -10,6 +10,7 @@ export function createSocketConsumer(input: {
   failure: SocketConsumer["failure"];
 }): SocketConsumer {
   return {
+    appId: input.config.appId,
     state: input.state,
     failure: input.failure,
     async accept(type, payload, envelopeId) {

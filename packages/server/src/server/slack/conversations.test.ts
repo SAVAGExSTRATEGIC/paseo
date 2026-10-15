@@ -37,6 +37,14 @@ afterEach(async () => {
 });
 
 describe("Slack durable conversations", () => {
+  it.skipIf(process.platform === "win32")(
+    "writes the journal with private Unix permissions",
+    async () => {
+      const { store, dir } = await openStore();
+      await store.accept(message());
+      expect((await stat(join(dir, "conversations.json"))).mode & 0o777).toBe(0o600);
+    },
+  );
   it("durably deduplicates delivery and separates thread identities", async () => {
     const { store, dir } = await openStore();
     expect(await store.accept(message())).toBe("accepted");
@@ -45,7 +53,6 @@ describe("Slack durable conversations", () => {
     const reopened = await ConversationStore.open(dir, policy);
     expect(reopened.pending()).toHaveLength(2);
     expect(new Set(reopened.pending().map((event) => event.conversationKey)).size).toBe(2);
-    expect((await stat(join(dir, "conversations.json"))).mode & 0o777).toBe(0o600);
   });
 
   it("rejects all unallowed boundaries before recording content", async () => {

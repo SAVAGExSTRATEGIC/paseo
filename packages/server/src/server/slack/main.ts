@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { acquirePidLock, releasePidLock, startPidLockHeartbeat } from "../pid-lock.js";
@@ -11,8 +11,9 @@ import { SlackOutbox } from "./outbox.js";
 import { ConversationRunner } from "./runner.js";
 import { SlackApi } from "./slack-api.js";
 import { runSocketMode } from "./socket.js";
+import { backupJournal, createBridgeLog } from "./operations.js";
 
-function log(code: string, correlation?: string): void {
+function bootstrapLog(code: string, correlation?: string): void {
   process.stdout.write(
     JSON.stringify({
       at: new Date().toISOString(),
@@ -57,6 +58,11 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
   const stop = () => controller.abort();
   signal.addEventListener("abort", stop, { once: true });
   if (signal.aborted) stop();
+  let logger: Awaited<ReturnType<typeof createBridgeLog>> | undefined;
+  const log = (code: string, correlation?: string) => {
+    if (logger) logger.log(code, correlation);
+    else bootstrapLog(code, correlation);
+  };
   const stopHeartbeat = startPidLockHeartbeat(config.dataDirectory, {
     onError: () => {
       log("bridge_lock_lost");
@@ -68,7 +74,10 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
   let runner: ConversationRunner | undefined;
   let socket: Promise<void> | undefined;
   try {
+    logger = await createBridgeLog(join(config.dataDirectory, "logs"), stop);
     const store = await ConversationStore.open(config.dataDirectory, config.policy);
+    await store.prune(Date.now());
+    await backupJournal(store, join(config.dataDirectory, "backups"), release);
     for (const entry of config.hosts)
       hosts.set(
         entry.name,
@@ -112,6 +121,7 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
     });
     let hostsCheck: Promise<void> | undefined;
     let nextCheck = 0;
+    let nextMaintenance = Date.now() + 60 * 60_000;
     log("bridge_started", release);
     while (!controller.signal.aborted) {
       if (!hostsCheck && Date.now() >= nextCheck) {
@@ -126,6 +136,12 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
             nextCheck = Date.now() + 10_000;
           });
       }
+      if (Date.now() >= nextMaintenance) {
+        await store.prune(Date.now());
+        await backupJournal(store, join(config.dataDirectory, "backups"), release);
+        nextMaintenance = Date.now() + 60 * 60_000;
+        log("journal_maintenance_complete");
+      }
       await runner.tick();
       await outbox.flush();
       health.lastTickAt = Date.now();
@@ -139,16 +155,25 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
       await delay(500, undefined, { signal: controller.signal }).catch(() => undefined);
     }
     await hostsCheck;
+  } catch (error) {
+    log("bridge_fatal");
+    throw error;
   } finally {
     stop();
-    await socket;
-    await runner?.close();
-    await Promise.allSettled([...hosts.values()].map((host) => host.close()));
-    await closeHealth?.();
-    stopHeartbeat();
-    signal.removeEventListener("abort", stop);
-    await releasePidLock(config.dataDirectory);
-    log("bridge_stopped");
+    await Promise.allSettled([
+      socket,
+      runner?.close(),
+      ...[...hosts.values()].map((host) => host.close()),
+    ]);
+    try {
+      await closeHealth?.();
+    } finally {
+      stopHeartbeat();
+      signal.removeEventListener("abort", stop);
+      await releasePidLock(config.dataDirectory);
+      log("bridge_stopped");
+      await logger?.close();
+    }
   }
 }
 
@@ -158,11 +183,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   process.once("SIGTERM", () => controller.abort());
   const file = process.argv[2];
   if (!file) {
-    log("bridge_config_argument_required");
+    bootstrapLog("bridge_config_argument_required");
     process.exitCode = 1;
   } else
     runBridge(file, controller.signal).catch(() => {
-      log("bridge_fatal");
+      bootstrapLog("bridge_fatal");
       process.exitCode = 1;
     });
 }

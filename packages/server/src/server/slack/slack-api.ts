@@ -80,7 +80,7 @@ export class SlackApi {
     if (response.status === 429) {
       const seconds = Number(response.headers.get("retry-after"));
       const delay = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 60_000;
-      throw new SlackRateLimitError(Math.min(delay, 3_600_000));
+      throw new SlackRateLimitError(delay);
     }
     if (!response.ok) throw new SlackApiError(`http_${response.status}`);
     const payload = ApiEnvelopeSchema.parse(await response.json());

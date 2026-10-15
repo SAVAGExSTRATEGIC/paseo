@@ -43,6 +43,8 @@ const IntakeSchema = MessageSchema.extend({
   terminal: z.enum(["completed", "failed", "canceled", "ended"]).nullable().default(null),
   terminalAfterAt: z.number().nullable().default(null),
   continuationHashes: z.array(z.string()).default([]),
+  completedAt: z.number().nullable().default(null),
+  recoveryScan: z.boolean().default(false),
 });
 export type SlackIntake = z.infer<typeof IntakeSchema>;
 const BindingSchema = z.object({
@@ -128,6 +130,8 @@ const InteractionReceiptSchema = z.object({
 });
 export type SlackInteractionReceipt = z.infer<typeof InteractionReceiptSchema>;
 const StateSchema = z.object({
+  rejectBeforeMs: z.number().default(0),
+  forgottenKeys: z.array(z.string()).default([]),
   version: z.literal(1),
   controls: z.array(ControlSchema).default([]),
   interactions: z.array(InteractionReceiptSchema).default([]),
@@ -136,7 +140,10 @@ const StateSchema = z.object({
   intake: z.array(IntakeSchema),
   outbox: z.array(DeliverySchema),
 });
-interface State extends z.infer<typeof StateSchema> {}
+export interface State extends z.infer<typeof StateSchema> {}
+export function parseJournal(payload: unknown): State {
+  return StateSchema.parse(payload);
+}
 interface BindInput {
   key: string;
   ownerId: string;
@@ -195,7 +202,7 @@ function sameTarget(left: SlackTarget, right: SlackTarget): boolean {
   );
 }
 
-async function writeState(directory: string, state: State): Promise<void> {
+export async function writeJournal(directory: string, state: State): Promise<void> {
   const temporary = join(directory, `.conversations.${randomUUID()}.tmp`);
   const handle = await open(temporary, "wx", 0o600);
   try {
@@ -253,6 +260,8 @@ export class ConversationStore {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
       state = {
         version: 1,
+        rejectBeforeMs: 0,
+        forgottenKeys: [],
         controls: [],
         interactions: [],
         selections: [],
@@ -260,7 +269,7 @@ export class ConversationStore {
         intake: [],
         outbox: [],
       };
-      await writeState(directory, state);
+      await writeJournal(directory, state);
     }
     return new ConversationStore(directory, parsedPolicy, state);
   }
@@ -278,7 +287,7 @@ export class ConversationStore {
     await this.tail;
     const next = structuredClone(this.state);
     const value = update(next);
-    await writeState(this.directory, next);
+    await writeJournal(this.directory, next);
     this.state = next;
     return value;
   }
@@ -295,9 +304,12 @@ export class ConversationStore {
             event.messageTs === message.messageTs),
       );
       if (duplicate) return "duplicate";
+      if (Number(message.messageTs) * 1000 < state.rejectBeforeMs)
+        throw new SlackPolicyError("expired_message");
       if (state.intake.length >= 10_000)
         throw new SlackStateError("Intake capacity reached; operator retention required");
       const key = conversationKey(message);
+      if (state.forgottenKeys.includes(key)) throw new SlackPolicyError("forgotten_conversation");
       const first = state.intake.find((entry) => entry.conversationKey === key);
       if (first && first.userId !== message.userId) throw new SlackPolicyError("binding_owner");
       const binding = state.bindings.find((entry) => entry.key === key);
@@ -313,8 +325,104 @@ export class ConversationStore {
         terminal: null,
         terminalAfterAt: null,
         continuationHashes: [],
+        completedAt: null,
+        recoveryScan: false,
       });
       return "accepted";
+    });
+  }
+
+  async snapshot(): Promise<string> {
+    await this.tail;
+    return JSON.stringify(this.state);
+  }
+
+  prune(now: number): Promise<void> {
+    return this.transaction((state) => {
+      const contentCutoff = now - 30 * 24 * 60 * 60_000;
+      const identityCutoff = now - 90 * 24 * 60 * 60_000;
+      const origins = new Set<string>();
+      state.rejectBeforeMs = Math.max(state.rejectBeforeMs, identityCutoff);
+      state.intake = state.intake.filter((event) => {
+        const first = !origins.has(event.conversationKey);
+        origins.add(event.conversationKey);
+        if (event.phase !== "completed") return true;
+        const completed = event.completedAt ?? event.receivedAt;
+        if (completed < contentCutoff) event.text = "";
+        return first || completed >= identityCutoff;
+      });
+      state.outbox = state.outbox.filter((entry) => {
+        if (entry.phase !== "sent") return true;
+        if (entry.createdAt < contentCutoff) {
+          entry.text = "";
+          delete entry.blocks;
+        }
+        return entry.createdAt >= identityCutoff;
+      });
+      state.interactions = state.interactions.filter(
+        (entry) =>
+          entry.phase !== "resolved" ||
+          state.controls.some(
+            (control) => control.token === entry.token && control.expiresAt >= identityCutoff,
+          ),
+      );
+      state.controls = state.controls.filter(
+        (entry) => entry.phase !== "resolved" || entry.expiresAt >= identityCutoff,
+      );
+    });
+  }
+
+  resume(id: string): Promise<void> {
+    return this.transaction((state) => {
+      const event = state.intake.find((entry) => entry.id === id);
+      if (!event || event.phase !== "needs_attention")
+        throw new SlackStateError("Only held intake can be resumed");
+      authorizeMessage(this.policy, event);
+      event.phase = "accepted";
+      event.recoveryScan = true;
+      event.terminal = null;
+    });
+  }
+
+  resolveControl(token: string): Promise<void> {
+    return this.transaction((state) => {
+      const control = state.controls.find((entry) => entry.token === token);
+      if (!control) throw new SlackStateError("Unknown control");
+      const tokens = new Set<string>();
+      for (const entry of state.controls) {
+        if (
+          entry.key === control.key &&
+          entry.agentId === control.agentId &&
+          entry.requestId === control.requestId &&
+          entry.fingerprint === control.fingerprint
+        ) {
+          entry.phase = "resolved";
+          tokens.add(entry.token);
+        }
+      }
+      for (const receipt of state.interactions)
+        if (tokens.has(receipt.token)) receipt.phase = "resolved";
+    });
+  }
+
+  forget(key: string): Promise<void> {
+    return this.transaction((state) => {
+      if (
+        state.intake.some(
+          (entry) => entry.conversationKey === key && entry.phase !== "completed",
+        ) ||
+        state.outbox.some((entry) => entry.key === key && entry.phase !== "sent") ||
+        state.controls.some((entry) => entry.key === key && entry.phase !== "resolved") ||
+        state.interactions.some((entry) => entry.key === key && entry.phase !== "resolved")
+      )
+        throw new SlackStateError("Resolve accepted work, deliveries and controls before deletion");
+      if (!state.forgottenKeys.includes(key)) state.forgottenKeys.push(key);
+      state.intake = state.intake.filter((entry) => entry.conversationKey !== key);
+      state.outbox = state.outbox.filter((entry) => entry.key !== key);
+      state.controls = state.controls.filter((entry) => entry.key !== key);
+      state.interactions = state.interactions.filter((entry) => entry.key !== key);
+      state.bindings = state.bindings.filter((entry) => entry.key !== key);
+      state.selections = state.selections.filter((entry) => entry.key !== key);
     });
   }
 
@@ -562,7 +670,7 @@ export class ConversationStore {
       event.phase = "dispatching";
       event.dispatchedAt = Date.now();
       event.terminalAfterAt = event.dispatchedAt;
-      event.startCursor = cursor;
+      event.startCursor = event.recoveryScan && cursor ? { ...cursor, seq: 0 } : cursor;
     });
   }
 
@@ -586,6 +694,7 @@ export class ConversationStore {
       if (!event) throw new SlackStateError("Unknown intake");
       for (const output of outputs) this.addOutput(state, event.conversationKey, output);
       event.phase = "completed";
+      event.completedAt = Date.now();
     });
   }
 

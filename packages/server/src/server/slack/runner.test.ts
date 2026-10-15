@@ -2,6 +2,8 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { WebSocket } from "ws";
+import type { WebSocketLike } from "@getpaseo/client/internal/daemon-client";
 import { z } from "zod";
 import { hashSync } from "bcryptjs";
 import { createPaseoApi } from "@getpaseo/client";
@@ -18,7 +20,10 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).toReversed()) await close();
 });
 
-async function fixture(modeId = "full-access") {
+async function fixture(modeId = "full-access", withDisconnect = false) {
+  let blocked = false;
+  const connections: WebSocket[] = [];
+  let dropNextTurn = false;
   const turns: string[] = [];
   const daemon = await createTestPaseoDaemon({
     mcpEnabled: false,
@@ -26,6 +31,11 @@ async function fixture(modeId = "full-access") {
     agentClients: createTestAgentClients({
       onStartTurn: (prompt) => {
         turns.push(String(prompt));
+        if (dropNextTurn) {
+          dropNextTurn = false;
+          blocked = true;
+          connections.at(-1)?.terminate();
+        }
       },
     }),
   });
@@ -81,11 +91,37 @@ async function fixture(modeId = "full-access") {
       },
     ],
   };
-  const host = new SlackDaemon({ ...config.hosts[0], password: "fixture-password" });
+  const host = new SlackDaemon(
+    { ...config.hosts[0], password: "fixture-password" },
+    withDisconnect
+      ? (url, options) => {
+          const socket = new WebSocket(url, options?.protocols, { headers: options?.headers });
+          socket.on("open", () => {
+            if (blocked) socket.terminate();
+          });
+          connections.push(socket);
+          return socket as unknown as WebSocketLike;
+        }
+      : undefined,
+  );
   cleanup.push(() => host.close());
   await host.connect();
   const store = await ConversationStore.open(directory, config.policy);
-  return { store, host, config, directory, cwd, turns };
+  return {
+    store,
+    host,
+    config,
+    directory,
+    cwd,
+    turns,
+    connections,
+    dropOnNextTurn: () => {
+      dropNextTurn = true;
+    },
+    allowReconnect: () => {
+      blocked = false;
+    },
+  };
 }
 
 it("preserves one session and exactly one dispatch across duplicate intake and runner restart (controlled provider fixture)", async () => {
@@ -296,3 +332,74 @@ it("holds a real daemon permission until an authorized bound interaction, and de
   });
   expect(failures).toEqual([]);
 }, 60_000);
+
+it("rejects a daemon that accepts anonymous connections even when a password was supplied", async () => {
+  const daemon = await createTestPaseoDaemon({ mcpEnabled: false });
+  cleanup.push(() => daemon.close());
+  const host = new SlackDaemon({
+    url: `ws://127.0.0.1:${daemon.port}/ws`,
+    serverId: daemon.daemon.getServerId(),
+    password: "not-enforced",
+    agentConfig: { provider: "codex/gpt-5.4-mini" },
+  });
+  cleanup.push(() => host.close());
+  await expect(host.connect()).rejects.toMatchObject({
+    code: "daemon_authentication_not_enforced",
+  });
+  await expect(
+    host.verifyTarget({
+      host: "fixture",
+      project: "fixture",
+      projectId: "p1",
+      cwd: "/fixture",
+      serverId: daemon.daemon.getServerId(),
+    }),
+  ).rejects.toThrow("verification pending");
+}, 20_000);
+
+it("recovers a real SDK network disconnect with retained work and one native dispatch", async () => {
+  const { store, host, config, turns, connections, dropOnNextTurn, allowReconnect } = await fixture(
+    "full-access",
+    true,
+  );
+  const controller = new AbortController();
+  const runner = new ConversationRunner({
+    config,
+    store,
+    hosts: new Map([["fixture", host]]),
+    signal: controller.signal,
+    failure: () => {},
+  });
+  cleanup.push(async () => {
+    controller.abort();
+    allowReconnect();
+    await runner.close();
+  });
+  await store.accept({
+    id: "Ev-network",
+    teamId: "T1",
+    userId: "U1",
+    channelId: "C1",
+    rootTs: "1.1",
+    messageTs: "1.1",
+    text: "respond with exactly: reconnect-once",
+    isDM: false,
+  });
+  dropOnNextTurn();
+  await runner.tick();
+  await expect
+    .poll(
+      () => store.deliveries().some((entry) => entry.text.includes("temporarily unavailable")),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  allowReconnect();
+  await host.connect();
+  await expect.poll(() => store.pending().length, { timeout: 15_000 }).toBe(0);
+  expect(connections.length).toBeGreaterThan(1);
+  expect(turns).toEqual(["respond with exactly: reconnect-once"]);
+  expect(store.bindings()).toHaveLength(1);
+  expect(
+    store.deliveries().findLast((entry) => entry.id.startsWith("slack-final-"))?.text,
+  ).toContain("reconnect-once");
+}, 45_000);
