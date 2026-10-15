@@ -84,7 +84,7 @@ export function normalizeInteraction(input: NormalizeInteractionInput) {
   const interaction = parsed.data;
   if (interaction.api_app_id !== input.appId || interaction.team.id !== input.teamId) return null;
   const action = interaction.actions[0];
-  const behavior = action.action_id === "paseo_allow" ? "allow" : "deny";
+  const behavior: "allow" | "deny" = action.action_id === "paseo_allow" ? "allow" : "deny";
   return {
     token: action.value,
     actorId: interaction.user.id,

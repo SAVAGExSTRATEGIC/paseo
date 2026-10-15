@@ -36,6 +36,8 @@ export class SlackDaemon {
       throw new SlackPolicyError("daemon_authentication_required");
     this.driver = new DaemonClient({
       ...config,
+      // Only the bridge's fixed event codes and hashed correlations enter operational logs.
+      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
       clientId: "savage-slack-bridge",
       connectTimeoutMs: 10_000,
       reconnect: { enabled: true, baseDelayMs: 1000, maxDelayMs: 30_000 },
@@ -67,6 +69,15 @@ export class SlackDaemon {
 
   async create(intake: SlackIntake, target: SlackTarget): Promise<PaseoAgentHandle> {
     await this.verifyTarget(target);
+    const separator = this.config.agentConfig.provider.indexOf("/");
+    if (separator < 1) throw new SlackPolicyError("provider_model_format");
+    const provider = this.config.agentConfig.provider.slice(0, separator);
+    const model = this.config.agentConfig.provider.slice(separator + 1);
+    const catalog = await this.api.providers.listModels(provider, { cwd: target.cwd });
+    if (catalog.error || !catalog.models?.some((entry) => entry.id === model))
+      throw new SlackStateError(
+        "The configured provider/model is unavailable; operator review required",
+      );
     // Creation never starts work; the durable identity must be bound before dispatch.
     return this.api.agents.create({
       idempotencyKey: stableOperationId("create", intake.conversationKey),
@@ -100,11 +111,30 @@ export class SlackDaemon {
     return agent;
   }
 
-  async send(agent: PaseoAgentHandle, intake: SlackIntake): Promise<void> {
+  async send(input: { agent: PaseoAgentHandle; intake: SlackIntake; text: string }): Promise<void> {
     this.requireIdentity();
+    await input.agent.send(input.text, {
+      messageId: stableOperationId("message", input.intake.id),
+    });
+  }
+
+  async attach(input: { target: SlackTarget; agentId: string }): Promise<PaseoAgentHandle> {
+    await this.verifyTarget(input.target);
+    const agent = this.api.agents.ref(input.agentId);
+    if (!(await agent.refresh()) || !agent.workspaceId || agent.archivedAt)
+      throw new SlackStateError("Session is unavailable or archived");
+    const workspace = this.api.workspaces.ref(agent.workspaceId);
+    await workspace.refresh();
+    if (workspace.projectId !== input.target.projectId)
+      throw new SlackPolicyError("attachment_project");
     if (agent.activeTurn)
-      throw new SlackStateError("Session is busy; accepted message remains queued");
-    await agent.send(intake.text, { messageId: stableOperationId("message", intake.id) });
+      throw new SlackStateError("Attach an idle session; current work will not be interrupted");
+    return agent;
+  }
+
+  async cancel(binding: SlackBinding): Promise<void> {
+    await this.inspect(binding);
+    await this.driver.cancelAgent(binding.agentId);
   }
 
   async close(): Promise<void> {

@@ -9,7 +9,7 @@ const HostSchema = z.object({
   serverId: z.string().min(1),
   passwordEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/u),
   agentConfig: z.object({
-    provider: z.string().min(1),
+    provider: z.string().regex(/^[^/\s]+\/[^\s]+$/u, "Use provider/model from the actual catalog"),
     modeId: z.string().optional(),
     thinkingOptionId: z.string().optional(),
     options: z.record(z.string(), z.json()).optional(),

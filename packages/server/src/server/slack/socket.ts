@@ -55,8 +55,10 @@ function socketConnection(input: ConnectionInput): Promise<void> {
     const socket = new WebSocket(input.url, { maxPayload: 256 * 1024, handshakeTimeout: 10_000 });
     let queue = Promise.resolve();
     let pongReceived = true;
+    let failed = false;
     const stop = () => socket.close(1000);
     input.signal.addEventListener("abort", stop, { once: true });
+    if (input.signal.aborted) stop();
     const heartbeat = setInterval(() => {
       if (!pongReceived) {
         socket.terminate();
@@ -69,12 +71,21 @@ function socketConnection(input: ConnectionInput): Promise<void> {
       pongReceived = true;
     });
     socket.on("error", () => {
-      reject(new Error("Slack socket error"));
+      failed = true;
+      socket.terminate();
     });
     socket.on("close", () => {
       clearInterval(heartbeat);
       input.signal.removeEventListener("abort", stop);
-      resolve();
+      // Finish durable intake already received before releasing exclusive state ownership.
+      queue.then(() => {
+        if (failed && !input.signal.aborted) {
+          reject(new Error("Slack socket error"));
+          return undefined;
+        }
+        resolve();
+        return undefined;
+      }, reject);
     });
     socket.on("message", (frame) => {
       let raw: unknown;

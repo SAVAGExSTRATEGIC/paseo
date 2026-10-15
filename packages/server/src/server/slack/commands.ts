@@ -7,6 +7,7 @@ interface TargetSelection {
 export type SlackCommand =
   | { kind: "status" }
   | { kind: "cancel" }
+  | { kind: "answer"; token: string; text: string }
   | { kind: "attach"; agentId: string }
   | { kind: "select"; selection: TargetSelection }
   | { kind: "prompt"; text: string; selection: TargetSelection };
@@ -14,6 +15,14 @@ export type SlackCommand =
 export function parseSlackCommand(text: string): SlackCommand {
   if (text === "status") return { kind: "status" };
   if (text === "cancel") return { kind: "cancel" };
+  if (text.startsWith("answer ")) {
+    const match =
+      /^answer ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) ([\s\S]+)$/u.exec(
+        text,
+      );
+    if (!match) throw new SlackStateError("Use: answer <question-token> <answer text or JSON>");
+    return { kind: "answer", token: match[1], text: match[2] };
+  }
   if (text.startsWith("attach ")) {
     const match = /^attach ([0-9a-f-]{36}) disclose=here$/u.exec(text);
     if (!match)

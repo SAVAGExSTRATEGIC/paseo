@@ -52,6 +52,7 @@ interface PostInput {
   channelId: string;
   threadTs: string;
   text: string;
+  blocks?: unknown[];
 }
 interface ReconcileInput {
   id: string;
@@ -110,6 +111,7 @@ export class SlackApi {
         channel: input.channelId,
         thread_ts: input.threadTs,
         text: input.text,
+        ...(input.blocks ? { blocks: input.blocks } : {}),
         parse: "none",
         link_names: false,
         unfurl_links: false,

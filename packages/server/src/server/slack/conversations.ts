@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { z } from "zod";
 
 const TargetSchema = z.object({
-  host: z.string().min(1),
-  project: z.string().min(1),
+  host: z.string().regex(/^[a-z0-9._-]+$/u),
+  project: z.string().regex(/^[a-z0-9._-]+$/u),
   projectId: z.string().min(1),
   cwd: z.string().min(1),
   serverId: z.string().min(1),
@@ -40,7 +40,9 @@ const IntakeSchema = MessageSchema.extend({
   receivedAt: z.number(),
   dispatchedAt: z.number().nullable().default(null),
   startCursor: CursorSchema.nullable().default(null),
-  terminal: z.enum(["completed", "failed", "canceled"]).nullable().default(null),
+  terminal: z.enum(["completed", "failed", "canceled", "ended"]).nullable().default(null),
+  terminalAfterAt: z.number().nullable().default(null),
+  continuationHashes: z.array(z.string()).default([]),
 });
 export type SlackIntake = z.infer<typeof IntakeSchema>;
 const BindingSchema = z.object({
@@ -57,10 +59,12 @@ const DeliverySchema = z.object({
   id: z.string(),
   key: z.string(),
   text: z.string(),
+  blocks: z.array(z.record(z.string(), z.json())).optional(),
   phase: z.enum(["pending", "sending", "sent", "uncertain"]),
   slackTs: z.string().nullable(),
   attempts: z.number().int().nonnegative(),
   createdAt: z.number(),
+  nextAttemptAt: z.number().default(0),
 });
 export type SlackDelivery = z.infer<typeof DeliverySchema>;
 const PermissionRequestSchema = z
@@ -71,6 +75,7 @@ const PermissionRequestSchema = z
   })
   .passthrough();
 const ControlSchema = z.object({
+  kind: z.enum(["permission", "question"]).default("permission"),
   token: z.string(),
   key: z.string(),
   agentId: z.string(),
@@ -113,9 +118,19 @@ function permissionFingerprint(value: unknown): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+const InteractionReceiptSchema = z.object({
+  id: z.string(),
+  token: z.string().uuid(),
+  key: z.string(),
+  actorId: z.string(),
+  behavior: z.enum(["allow", "deny"]),
+  phase: z.enum(["accepted", "claimed", "resolved"]),
+});
+export type SlackInteractionReceipt = z.infer<typeof InteractionReceiptSchema>;
 const StateSchema = z.object({
   version: z.literal(1),
   controls: z.array(ControlSchema).default([]),
+  interactions: z.array(InteractionReceiptSchema).default([]),
   selections: z.array(z.object({ key: z.string(), target: TargetSchema })).default([]),
   bindings: z.array(BindingSchema),
   intake: z.array(IntakeSchema),
@@ -128,10 +143,12 @@ interface BindInput {
   target: SlackTarget;
   agentId: string;
   workspaceId: string;
+  cursor?: z.infer<typeof CursorSchema>;
 }
 interface Output {
   id: string;
   text: string;
+  blocks?: z.infer<typeof DeliverySchema>["blocks"];
 }
 interface CheckpointInput {
   key: string;
@@ -234,7 +251,15 @@ export class ConversationStore {
       state = StateSchema.parse(JSON.parse(await readFile(file, "utf8")));
     } catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-      state = { version: 1, controls: [], selections: [], bindings: [], intake: [], outbox: [] };
+      state = {
+        version: 1,
+        controls: [],
+        interactions: [],
+        selections: [],
+        bindings: [],
+        intake: [],
+        outbox: [],
+      };
       await writeState(directory, state);
     }
     return new ConversationStore(directory, parsedPolicy, state);
@@ -286,6 +311,8 @@ export class ConversationStore {
         dispatchedAt: null,
         startCursor: null,
         terminal: null,
+        terminalAfterAt: null,
+        continuationHashes: [],
       });
       return "accepted";
     });
@@ -295,7 +322,8 @@ export class ConversationStore {
     return structuredClone(this.state.intake.filter((event) => event.phase !== "completed"));
   }
   binding(key: string): SlackBinding | undefined {
-    return structuredClone(this.state.bindings.find((entry) => entry.key === key));
+    const binding = this.state.bindings.find((entry) => entry.key === key);
+    return binding ? structuredClone(this.requireAuthorizedBinding(this.state, key)) : undefined;
   }
   bindings(): SlackBinding[] {
     return structuredClone(this.state.bindings);
@@ -328,7 +356,7 @@ export class ConversationStore {
           entry.target.serverId === input.target.serverId && entry.agentId === input.agentId,
       );
       if (reused) throw new SlackStateError("Session already attached to a conversation");
-      state.bindings.push({ ...input, cursor: null, createdAt: Date.now() });
+      state.bindings.push({ ...input, cursor: input.cursor ?? null, createdAt: Date.now() });
     });
   }
 
@@ -358,12 +386,17 @@ export class ConversationStore {
   private addOutput(state: State, key: string, output: Output): void {
     const existing = state.outbox.find((entry) => entry.id === output.id);
     if (existing) {
-      if (existing.key !== key || existing.text !== output.text)
+      if (
+        existing.key !== key ||
+        existing.text !== output.text ||
+        JSON.stringify(existing.blocks) !== JSON.stringify(output.blocks)
+      )
         throw new SlackStateError("Outbox identity conflict");
       return;
     }
     state.outbox.push({
       ...output,
+      nextAttemptAt: 0,
       key,
       phase: "pending",
       slackTs: null,
@@ -401,6 +434,17 @@ export class ConversationStore {
     const request = PermissionRequestSchema.parse(input.request);
     if (request.kind === "question")
       throw new SlackStateError("Question requires the user-input path");
+    return this.offerControl(input, "permission");
+  }
+
+  async offerQuestion(input: PermissionOffer): Promise<string> {
+    const request = PermissionRequestSchema.parse(input.request);
+    if (request.kind !== "question") throw new SlackPolicyError("question_kind");
+    return this.offerControl(input, "question");
+  }
+
+  private offerControl(input: PermissionOffer, kind: "permission" | "question"): Promise<string> {
+    const request = PermissionRequestSchema.parse(input.request);
     return this.transaction((state) => {
       const binding = this.requireAuthorizedBinding(state, input.key);
       const fingerprint = permissionFingerprint(request);
@@ -415,6 +459,7 @@ export class ConversationStore {
       const token = randomUUID();
       state.controls.push({
         token,
+        kind,
         key: input.key,
         agentId: binding.agentId,
         requestId: request.id,
@@ -429,11 +474,33 @@ export class ConversationStore {
   }
 
   async claimPermission(input: PermissionClaim): Promise<ClaimedPermission> {
+    return this.claimControl(input, "permission");
+  }
+
+  async claimQuestion(
+    input: Omit<PermissionClaim, "behavior">,
+    continuation?: string,
+  ): Promise<ClaimedPermission> {
+    return this.claimControl({ ...input, behavior: "allow" }, "question", continuation);
+  }
+
+  private claimControl(
+    input: PermissionClaim,
+    kind: "permission" | "question",
+    continuation?: string,
+  ): Promise<ClaimedPermission> {
     const current = PermissionRequestSchema.parse(input.current);
+    if ((current.kind === "question") !== (kind === "question"))
+      throw new SlackPolicyError("control_kind");
     return this.transaction((state) => {
       const binding = this.requireAuthorizedBinding(state, input.key);
       const control = state.controls.find((entry) => entry.token === input.token);
-      if (!control || control.key !== input.key || control.agentId !== binding.agentId)
+      if (
+        !control ||
+        control.kind !== kind ||
+        control.key !== input.key ||
+        control.agentId !== binding.agentId
+      )
         throw new SlackPolicyError("control_binding");
       if (control.ownerId !== input.actorId || !this.policy.userIds.includes(input.actorId))
         throw new SlackPolicyError("control_actor");
@@ -447,6 +514,19 @@ export class ConversationStore {
         throw new SlackStateError("Permission control already claimed");
       control.phase = "claimed";
       control.behavior = input.behavior;
+      if (kind === "question") {
+        const active = state.intake.find(
+          (entry) =>
+            entry.conversationKey === input.key &&
+            (entry.phase === "running" || entry.phase === "dispatching"),
+        );
+        if (active) {
+          active.terminal = null;
+          active.terminalAfterAt = input.now;
+          if (continuation)
+            active.continuationHashes.push(createHash("sha256").update(continuation).digest("hex"));
+        }
+      }
       return { agentId: binding.agentId, requestId: current.id, behavior: input.behavior };
     });
   }
@@ -481,18 +561,22 @@ export class ConversationStore {
       this.requireAuthorizedBinding(state, event.conversationKey);
       event.phase = "dispatching";
       event.dispatchedAt = Date.now();
+      event.terminalAfterAt = event.dispatchedAt;
       event.startCursor = cursor;
     });
   }
 
-  recordTerminal(key: string, terminal: "completed" | "failed" | "canceled"): Promise<void> {
+  recordTerminal(
+    key: string,
+    terminal: "completed" | "failed" | "canceled" | "ended",
+  ): Promise<void> {
     return this.transaction((state) => {
       const event = state.intake.find(
         (entry) =>
           entry.conversationKey === key &&
           (entry.phase === "dispatching" || entry.phase === "running"),
       );
-      if (event) event.terminal = terminal;
+      if (event && (terminal !== "ended" || !event.terminal)) event.terminal = terminal;
     });
   }
 
@@ -507,5 +591,70 @@ export class ConversationStore {
 
   knownConversation(key: string): boolean {
     return this.state.intake.some((event) => event.conversationKey === key);
+  }
+  acceptInteraction(input: Omit<SlackInteractionReceipt, "phase">): Promise<void> {
+    const receipt = InteractionReceiptSchema.parse({ ...input, phase: "accepted" });
+    return this.transaction((state) => {
+      const binding = this.requireAuthorizedBinding(state, receipt.key);
+      const control = state.controls.find((entry) => entry.token === receipt.token);
+      if (
+        !control ||
+        control.kind !== "permission" ||
+        control.key !== binding.key ||
+        control.ownerId !== receipt.actorId
+      )
+        throw new SlackPolicyError("control_binding");
+      if (state.interactions.some((entry) => entry.id === receipt.id)) return;
+      state.interactions.push(receipt);
+    });
+  }
+
+  pendingInteractions(): SlackInteractionReceipt[] {
+    return structuredClone(this.state.interactions.filter((entry) => entry.phase !== "resolved"));
+  }
+
+  interactionState(id: string, phase: SlackInteractionReceipt["phase"]): Promise<void> {
+    return this.transaction((state) => {
+      const receipt = state.interactions.find((entry) => entry.id === id);
+      if (!receipt) throw new SlackStateError("Unknown interaction");
+      receipt.phase = phase;
+    });
+  }
+  controlRequestId(token: string, key: string): string | null {
+    return (
+      this.state.controls.find((control) => control.token === token && control.key === key)
+        ?.requestId ?? null
+    );
+  }
+  destination(key: string): Pick<SlackMessage, "teamId" | "channelId" | "rootTs" | "userId"> {
+    const origin = this.state.intake.find((entry) => entry.conversationKey === key);
+    if (!origin) throw new SlackStateError("Missing conversation origin");
+    authorizeMessage(this.policy, origin);
+    if (this.state.bindings.some((binding) => binding.key === key))
+      this.requireAuthorizedBinding(this.state, key);
+    return {
+      teamId: origin.teamId,
+      channelId: origin.channelId,
+      rootTs: origin.rootTs,
+      userId: origin.userId,
+    };
+  }
+
+  beginDelivery(id: string): Promise<void> {
+    return this.transaction((state) => {
+      const entry = state.outbox.find((delivery) => delivery.id === id);
+      if (!entry || entry.phase !== "pending") throw new SlackStateError("Delivery state conflict");
+      entry.phase = "sending";
+      entry.attempts += 1;
+    });
+  }
+
+  deferDelivery(id: string, phase: "pending" | "uncertain", nextAttemptAt: number): Promise<void> {
+    return this.transaction((state) => {
+      const entry = state.outbox.find((delivery) => delivery.id === id);
+      if (!entry) throw new SlackStateError("Unknown delivery");
+      entry.phase = phase;
+      entry.nextAttemptAt = nextAttemptAt;
+    });
   }
 }

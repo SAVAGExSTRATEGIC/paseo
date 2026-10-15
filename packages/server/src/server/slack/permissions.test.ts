@@ -110,4 +110,37 @@ describe("Slack permission controls", () => {
       controls.offerPermission({ key, request: { ...request, kind: "question" }, now: 100 }),
     ).rejects.toThrow("user-input");
   });
+  it("keeps question tokens separate from tool approvals and persists answer claims", async () => {
+    const { store, directory, key } = await fixture();
+    const question = {
+      ...request,
+      kind: "question",
+      name: "request_user_input",
+      input: { questions: [{ header: "Color", question: "Which?" }] },
+    };
+    const toolToken = await store.offerPermission({ key, request, now: 100 });
+    const questionToken = await store.offerQuestion({ key, request: question, now: 100 });
+    const claim = { key, actorId: "U1", current: question, now: 101 };
+    await expect(store.claimQuestion({ ...claim, token: toolToken })).rejects.toThrow();
+    await expect(
+      store.claimPermission({ ...claim, token: questionToken, behavior: "allow" }),
+    ).rejects.toThrow();
+    await expect(
+      store.claimQuestion({ ...claim, token: questionToken, actorId: "U2" }),
+    ).rejects.toThrow();
+    await store.prepareDispatch("Ev1", { epoch: "fixture", seq: 0 });
+    await store.recordTerminal(key, "completed");
+    expect(
+      await store.claimQuestion(
+        { ...claim, token: questionToken },
+        "Answers to your questions: fixture",
+      ),
+    ).toMatchObject({
+      requestId: question.id,
+    });
+    const reopened = await ConversationStore.open(directory, policy);
+    await expect(reopened.claimQuestion({ ...claim, token: questionToken })).rejects.toThrow(
+      "already claimed",
+    );
+  });
 });
