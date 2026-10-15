@@ -28,6 +28,8 @@ export interface ConnectOptions {
   target: DaemonTarget;
   timeout?: number;
   instance?: DaemonInstance;
+  clientId?: string;
+  clientType?: "cli" | "browser";
 }
 export function resolveClientPaseoHome(
   target: DaemonTarget,
@@ -213,6 +215,7 @@ async function tryConnectHost(
   credential: ReturnType<typeof resolveDaemonCredential>,
   home: string,
   clientId: string,
+  clientType: "cli" | "browser",
   timeout: number,
   nodeWebSocketFactory: ReturnType<typeof createNodeWebSocketFactory>,
 ): Promise<{ client: DaemonClient } | { error: unknown }> {
@@ -220,7 +223,7 @@ async function tryConnectHost(
   const client = new DaemonClient({
     url: target.url,
     clientId,
-    clientType: "cli",
+    clientType,
     appVersion: resolveCliVersion(),
     ...(credential?.kind === "password" ? { password: credential.password } : {}),
     ...(credential?.kind === "localCredential"
@@ -251,6 +254,7 @@ async function tryConnectHost(
 async function connectViaRelayOffer(
   offer: ConnectionOffer,
   clientId: string,
+  clientType: "cli" | "browser",
   timeout: number,
   nodeWebSocketFactory: ReturnType<typeof createNodeWebSocketFactory>,
 ): Promise<DaemonClient> {
@@ -264,7 +268,7 @@ async function connectViaRelayOffer(
   const client = new DaemonClient({
     url,
     clientId,
-    clientType: "cli",
+    clientType,
     appVersion: resolveCliVersion(),
     connectTimeoutMs: timeout,
     webSocketFactory: (
@@ -309,7 +313,8 @@ async function connectSelectedDaemon(options: ConnectOptions): Promise<DaemonCli
           })
         ).listen;
   const home = resolveClientPaseoHome(options.target);
-  const clientId = await getOrCreateCliClientId(home);
+  const clientId = options.clientId ?? (await getOrCreateCliClientId(home));
+  const clientType = options.clientType ?? "cli";
   const nodeWebSocketFactory = createNodeWebSocketFactory();
 
   if (explicitHost?.trim().startsWith("ssh://")) {
@@ -321,6 +326,7 @@ async function connectSelectedDaemon(options: ConnectOptions): Promise<DaemonCli
       password ? { kind: "password", password } : null,
       home,
       clientId,
+      clientType,
       Math.max(1, deadline - Date.now()),
       nodeWebSocketFactory,
     );
@@ -346,6 +352,7 @@ async function connectSelectedDaemon(options: ConnectOptions): Promise<DaemonCli
     return connectViaRelayOffer(
       offer,
       clientId,
+      clientType,
       Math.max(1, deadline - Date.now()),
       nodeWebSocketFactory,
     );
@@ -356,6 +363,7 @@ async function connectSelectedDaemon(options: ConnectOptions): Promise<DaemonCli
     resolveDaemonCredential(explicitHost, home),
     home,
     clientId,
+    clientType,
     Math.max(1, deadline - Date.now()),
     nodeWebSocketFactory,
   );

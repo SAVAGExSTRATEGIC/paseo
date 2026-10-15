@@ -62,4 +62,17 @@ describe("CLI SSH transport", () => {
       clientType: "cli",
     });
   });
+
+  it("uses an isolated browser client identity when the native host requests it", async () => {
+    await connectToDaemon({
+      target: { kind: "endpoint", host: "ssh://deploy@build-box:2222?daemonPort=7777" },
+      clientId: "browser-passport-test",
+      clientType: "browser",
+    });
+
+    expect(mocks.configs[0]).toMatchObject({
+      clientId: "browser-passport-test",
+      clientType: "browser",
+    });
+  });
 });
