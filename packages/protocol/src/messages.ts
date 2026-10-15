@@ -393,6 +393,7 @@ const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
 });
 
 const McpStdioServerConfigSchema = z.object({
+  defaultToolsApprovalMode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),
   type: z.literal("stdio"),
   command: z.string(),
   args: z.array(z.string()).optional(),
@@ -401,6 +402,7 @@ const McpStdioServerConfigSchema = z.object({
 });
 
 const McpHttpServerConfigSchema = z.object({
+  defaultToolsApprovalMode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),
   type: z.literal("http"),
   url: z.string(),
   headers: z.record(z.string(), z.string()).optional(),
@@ -408,6 +410,7 @@ const McpHttpServerConfigSchema = z.object({
 });
 
 const McpSseServerConfigSchema = z.object({
+  defaultToolsApprovalMode: z.enum(["auto", "prompt", "writes", "approve"]).optional(),
   type: z.literal("sse"),
   url: z.string(),
   headers: z.record(z.string(), z.string()).optional(),

@@ -1187,6 +1187,39 @@ describe("Codex app-server provider", () => {
     }
   });
 
+  test.each(["stdio", "http", "sse"] as const)(
+    "preserves selected %s MCP approval defaults without enabling other servers",
+    async (type) => {
+      const server =
+        type === "stdio"
+          ? { type, command: "selected-mcp", defaultToolsApprovalMode: "auto" as const }
+          : { type, url: "https://example.invalid/mcp", defaultToolsApprovalMode: "auto" as const };
+      const session = createSession({
+        modeId: undefined,
+        mcpServers: {
+          selected: server,
+          unchanged: { type: "http", url: "https://example.invalid/other" },
+        },
+      });
+      const request = vi.fn(async (method: string) => {
+        if (method === "thread/loaded/list") return { data: ["test-thread"] };
+        if (method === "turn/start") return {};
+        throw new Error(`Unexpected request: ${method}`);
+      });
+      session.activeForegroundTurnId = null;
+      session.client = createStub<CodexClientLike>({ request });
+      await session.startTurn("verify selected MCP approval");
+      const turn = request.mock.calls.find(([method]) => method === "turn/start")?.[1];
+      expect(turn).toMatchObject({
+        config: { mcp_servers: { selected: { default_tools_approval_mode: "auto" } } },
+      });
+      expect(turn).not.toHaveProperty("config.mcp_servers.unchanged.default_tools_approval_mode");
+      expect(Object.keys((turn as { config: { mcp_servers: object } }).config.mcp_servers)).toEqual(
+        ["selected", "unchanged"],
+      );
+    },
+  );
+
   test("preapproves only granted tools on the injected Codex MCP server", async () => {
     const session = createSession({
       modeId: undefined,

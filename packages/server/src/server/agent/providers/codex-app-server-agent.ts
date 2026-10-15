@@ -871,6 +871,7 @@ function expandCodexCustomPrompt(template: string, args: string | undefined): st
 }
 
 interface CodexMcpServerConfig {
+  default_tools_approval_mode?: McpServerConfig["defaultToolsApprovalMode"];
   url?: string;
   http_headers?: Record<string, string>;
   command?: string;
@@ -883,17 +884,26 @@ function toCodexMcpConfig(config: McpServerConfig): CodexMcpServerConfig {
   switch (config.type) {
     case "stdio":
       return {
+        ...(config.defaultToolsApprovalMode !== undefined
+          ? { default_tools_approval_mode: config.defaultToolsApprovalMode }
+          : {}),
         command: config.command,
         args: config.args,
         env: config.env,
       };
     case "http":
       return {
+        ...(config.defaultToolsApprovalMode !== undefined
+          ? { default_tools_approval_mode: config.defaultToolsApprovalMode }
+          : {}),
         url: config.url,
         http_headers: config.headers,
       };
     case "sse":
       return {
+        ...(config.defaultToolsApprovalMode !== undefined
+          ? { default_tools_approval_mode: config.defaultToolsApprovalMode }
+          : {}),
         url: config.url,
         http_headers: config.headers,
       };
