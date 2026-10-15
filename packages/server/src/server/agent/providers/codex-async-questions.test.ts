@@ -393,6 +393,46 @@ test("Stop dismisses async questions before cancellation and keeps them dismisse
   }
 });
 
+test("dismissing an obsolete async question retains the supplied evidence reason", async () => {
+  const { session, events, ask } = await setup();
+  let metadata: Record<string, unknown> | undefined;
+  try {
+    await ask();
+    const [permission] = session.getPendingPermissions();
+    expect(permission.id).toBe("permission-async-question-1");
+    const reason = "Superseded after harmless router read verified in this session";
+    await session.respondToPermission(permission.id, { behavior: "deny", message: reason });
+    expect(session.getPendingPermissions()).toEqual([]);
+    metadata = session.describePersistence()?.metadata;
+    expect(metadata?.asyncQuestions).toEqual([
+      expect.objectContaining({ resolution: "dismissed", resolutionReason: reason }),
+    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "timeline",
+        item: expect.objectContaining({
+          callId: "async-question-1",
+          detail: expect.objectContaining({ text: expect.stringContaining(reason) }),
+        }),
+      }),
+    );
+  } finally {
+    await session.close();
+  }
+  const resumed = await setup(metadata);
+  try {
+    expect(resumed.session.getPendingPermissions()).toEqual([]);
+    expect(resumed.session.describePersistence()?.metadata?.asyncQuestions).toEqual([
+      expect.objectContaining({
+        resolution: "dismissed",
+        resolutionReason: "Superseded after harmless router read verified in this session",
+      }),
+    ]);
+  } finally {
+    await resumed.session.close();
+  }
+});
+
 test("late answers use the existing follow-up prompt and dismissal does not interrupt", async () => {
   const { session, appServer, ask, finish } = await setup();
   try {

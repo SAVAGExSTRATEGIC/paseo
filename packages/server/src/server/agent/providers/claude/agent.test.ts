@@ -635,6 +635,7 @@ describe("ClaudeAgentSession features", () => {
       applyFlagSettings: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
       getContextUsage: vi.fn(async () => undefined),
+      mcpServerStatus: vi.fn(async () => []),
       [Symbol.asyncIterator](): AsyncIterator<SDKMessage, void> {
         return {
           next: async () => {
@@ -651,6 +652,62 @@ describe("ClaudeAgentSession features", () => {
     });
     return { queryFactory, queryMock, launches };
   }
+
+  test("inspects one configured server without starting a query or exposing provider errors", async () => {
+    const { queryFactory, queryMock } = createQueryMock();
+    queryMock.mcpServerStatus.mockResolvedValue([
+      { name: "router", status: "needs-auth", error: "private auth detail" },
+      { name: "other", status: "connected" },
+    ]);
+    const session = await new ClaudeAgentClient({
+      logger,
+      queryFactory,
+      resolveBinary: async () => "/test/claude/bin",
+    }).createSession({
+      provider: "claude",
+      cwd: process.cwd(),
+      mcpServers: { router: { type: "http", url: "https://example.test/mcp" } },
+    });
+    try {
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "unavailable",
+        server: "router",
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      });
+      expect(queryFactory).not.toHaveBeenCalled();
+      await (session as unknown as { ensureQuery(): Promise<unknown> }).ensureQuery();
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "observed",
+        server: "router",
+        connection: "needs-auth",
+        auth: "notLoggedIn",
+        advertisedTools: [],
+        toolCatalog: "not_exposed_by_provider_api",
+      });
+      expect(await session.inspectMcpServer?.("unconfigured")).toEqual({
+        status: "not_configured",
+        server: "unconfigured",
+        advertisedTools: [],
+      });
+      queryMock.mcpServerStatus.mockRejectedValueOnce(new Error("private transport detail"));
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "unavailable",
+        server: "router",
+        reason: "provider_request_failed",
+        advertisedTools: [],
+      });
+      queryMock.mcpServerStatus.mockResolvedValueOnce([]);
+      expect(await session.inspectMcpServer?.("router")).toEqual({
+        status: "not_advertised",
+        server: "router",
+        advertisedTools: [],
+      });
+      expect(queryMock.mcpServerStatus).toHaveBeenCalledTimes(3);
+    } finally {
+      await session.close();
+    }
+  });
 
   test("publishes a resolution when the SDK aborts a permission callback", async () => {
     const { queryFactory } = createQueryMock();

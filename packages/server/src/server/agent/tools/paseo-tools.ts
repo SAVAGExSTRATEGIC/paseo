@@ -1990,6 +1990,49 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  if (callerAgentId) {
+    registerTool(
+      "inspect_own_mcp_server",
+      {
+        title: "Inspect own MCP server",
+        description:
+          "Read one configured MCP server's current provider connection and advertised tool names for this session. This does not execute a tool or change configuration.",
+        inputSchema: { server: z.string().trim().min(1).max(200) },
+      },
+      async ({ server }) => {
+        const caller = resolveCallerAgent();
+        if (!caller) throw new Error("Agent-scoped session unavailable");
+        let inspection;
+        if (!caller.session) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "session_closed",
+            advertisedTools: [],
+          };
+        } else if (!caller.session.inspectMcpServer) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "unsupported_provider",
+            advertisedTools: [],
+          };
+        } else {
+          inspection = await caller.session.inspectMcpServer(server);
+        }
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            agentId: caller.id,
+            provider: caller.provider,
+            inspection,
+            harmlessExecution: "unverified",
+          }),
+        };
+      },
+    );
+  }
+
   registerTool(
     "get_agent_status",
     {

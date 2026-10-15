@@ -18,6 +18,7 @@ const ItemSchema = z.object({
 const RecordSchema = z.object({
   item: ItemSchema,
   resolution: z.union([z.literal("dismissed"), z.array(z.string())]).optional(),
+  resolutionReason: z.string().optional(),
 });
 type QuestionRecord = z.infer<typeof RecordSchema>;
 
@@ -62,7 +63,10 @@ function toTimeline(record: QuestionRecord): ToolCallTimelineItem {
               .filter(Boolean)
               .join("\n"),
           )
-          .join("\n\n") + (record.resolution === "dismissed" ? "\n\nDismissed" : ""),
+          .join("\n\n") +
+        (record.resolution === "dismissed"
+          ? `\n\nDismissed${record.resolutionReason ? `: ${record.resolutionReason}` : ""}`
+          : ""),
     },
   };
 }
@@ -129,6 +133,10 @@ export class CodexAsyncQuestions {
       prompt,
       complete: () => {
         record.resolution = resolution;
+        if (resolution === "dismissed") {
+          const reason = response.behavior === "deny" ? response.message?.trim() : undefined;
+          if (reason) record.resolutionReason = reason;
+        }
         return toTimeline(record);
       },
     };

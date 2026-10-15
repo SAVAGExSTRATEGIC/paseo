@@ -221,6 +221,122 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+test("Codex inspects only the requested configured server in its active thread", async () => {
+  const appServer = createFakeCodexAppServer({
+    "mcpServerStatus/list": (params) => {
+      expect(params).toEqual({
+        threadId: "thread-1",
+        serverName: "router",
+        detail: "toolsAndAuthOnly",
+      });
+      return {
+        data: [
+          {
+            name: "router",
+            runtimeStatus: "connected",
+            authStatus: "bearerToken",
+            tools: { search: { name: "search" }, read: { name: "read" } },
+            toolsError: null,
+          },
+        ],
+        nextCursor: null,
+      };
+    },
+  });
+  const session = new CodexAppServerAgentSession(
+    createConfig({ mcpServers: { router: { type: "http", url: "https://example.test/mcp" } } }),
+    null,
+    createTestLogger(),
+    async () => appServer.child,
+  );
+  try {
+    await session.startTurn("hello");
+    expect(await session.inspectMcpServer("router")).toEqual({
+      status: "observed",
+      server: "router",
+      connection: "connected",
+      auth: "bearerToken",
+      advertisedTools: ["read", "search"],
+      toolCatalog: "listed",
+    });
+    expect(await session.inspectMcpServer("unconfigured")).toEqual({
+      status: "not_configured",
+      server: "unconfigured",
+      advertisedTools: [],
+    });
+    expect(
+      appServer.requests().filter((item) => item.method === "mcpServerStatus/list"),
+    ).toHaveLength(1);
+  } finally {
+    await session.close();
+  }
+});
+
+test("Codex MCP inspection redacts provider errors and rejects unexpected status values", async () => {
+  const appServer = createFakeCodexAppServer({
+    "mcpServerStatus/list": () => ({
+      data: [
+        {
+          name: "router",
+          runtimeStatus: "internal endpoint token",
+          authStatus: "private account name",
+          tools: { read: { name: "read" } },
+          toolsError: "private provider failure detail",
+        },
+      ],
+      nextCursor: null,
+    }),
+  });
+  const session = new CodexAppServerAgentSession(
+    createConfig({ mcpServers: { router: { type: "http", url: "https://example.test/mcp" } } }),
+    null,
+    createTestLogger(),
+    async () => appServer.child,
+  );
+  try {
+    await session.startTurn("hello");
+    expect(await session.inspectMcpServer("router")).toEqual({
+      status: "observed",
+      server: "router",
+      connection: "unknown",
+      auth: "unknown",
+      advertisedTools: [],
+      toolCatalog: "failed",
+    });
+  } finally {
+    await session.close();
+  }
+});
+
+test("Codex MCP inspection separates missing catalog, timeout and provider failure", async () => {
+  const session = createSession({
+    mcpServers: { router: { type: "http", url: "https://example.test/mcp" } },
+  });
+  const request = vi.fn().mockResolvedValue({ data: [], nextCursor: null });
+  session.client = { request };
+  expect(await session.inspectMcpServer!("router")).toEqual({
+    status: "not_advertised",
+    server: "router",
+    advertisedTools: [],
+  });
+  request.mockRejectedValueOnce(
+    new Error("Codex app-server request timed out for mcpServerStatus/list"),
+  );
+  expect(await session.inspectMcpServer!("router")).toEqual({
+    status: "unavailable",
+    server: "router",
+    reason: "timeout",
+    advertisedTools: [],
+  });
+  request.mockRejectedValueOnce(new Error("Unsupported method: mcpServerStatus/list"));
+  expect(await session.inspectMcpServer!("router")).toEqual({
+    status: "unavailable",
+    server: "router",
+    reason: "provider_request_failed",
+    advertisedTools: [],
+  });
+});
+
 describe("Codex active-turn steering admission", () => {
   test("a steer without the clearing contract leaves permissions open", async () => {
     const appServer = createFakeCodexAppServer({

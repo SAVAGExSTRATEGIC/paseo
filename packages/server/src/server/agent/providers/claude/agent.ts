@@ -108,6 +108,7 @@ import {
   type AgentPermissionUpdate,
   type AgentPersistenceHandle,
   type AgentProviderNotice,
+  type AgentMcpServerInspection,
   type AgentPromptInput,
   type AgentRunOptions,
   type AgentRunResult,
@@ -2192,6 +2193,78 @@ class ClaudeAgentSession implements AgentSession {
     };
     this.cachedRuntimeInfo = info;
     return { ...info };
+  }
+
+  async inspectMcpServer(server: string): Promise<AgentMcpServerInspection> {
+    if (!Object.hasOwn(this.config.mcpServers ?? {}, server)) {
+      return { status: "not_configured", server, advertisedTools: [] };
+    }
+    const query = this.query;
+    if (!query || this.closed) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      };
+    }
+    let statuses: Awaited<ReturnType<Query["mcpServerStatus"]>>;
+    try {
+      statuses = await withTimeout(
+        query.mcpServerStatus(),
+        5_000,
+        "Claude MCP status request timed out",
+      );
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message === "Claude MCP status request timed out"
+          ? "timeout"
+          : "provider_request_failed";
+      return { status: "unavailable", server, reason, advertisedTools: [] };
+    }
+    if (this.query !== query || this.closed) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      };
+    }
+    if (!Array.isArray(statuses)) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "invalid_provider_response",
+        advertisedTools: [],
+      };
+    }
+    const matching = statuses.filter((item) => item?.name === server);
+    if (matching.length === 0) return { status: "not_advertised", server, advertisedTools: [] };
+    if (matching.length !== 1) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "invalid_provider_response",
+        advertisedTools: [],
+      };
+    }
+    const status = matching[0]?.status;
+    if (!status || !["connected", "failed", "needs-auth", "pending", "disabled"].includes(status)) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "invalid_provider_response",
+        advertisedTools: [],
+      };
+    }
+    return {
+      status: "observed",
+      server,
+      connection: status,
+      auth: status === "needs-auth" ? "notLoggedIn" : "unknown",
+      advertisedTools: [],
+      toolCatalog: "not_exposed_by_provider_api",
+    };
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {

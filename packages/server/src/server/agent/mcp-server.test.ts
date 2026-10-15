@@ -5644,6 +5644,100 @@ describe("speak MCP tool", () => {
   });
 });
 
+describe("own-session MCP inspection", () => {
+  const logger = createTestLogger();
+
+  it("returns only a requested server's sanitized provider catalog", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const inspectMcpServer = vi.fn().mockResolvedValue({
+      status: "observed",
+      server: "router",
+      connection: "connected",
+      auth: "bearerToken",
+      advertisedTools: ["read"],
+      toolCatalog: "listed",
+    });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: { inspectMcpServer },
+    } as unknown as ManagedAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const result = await registeredTool(server, "inspect_own_mcp_server").handler({
+      server: "router",
+    });
+    expect(inspectMcpServer).toHaveBeenCalledExactlyOnceWith("router");
+    expect(result.structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "observed",
+        server: "router",
+        connection: "connected",
+        auth: "bearerToken",
+        advertisedTools: ["read"],
+        toolCatalog: "listed",
+      },
+      harmlessExecution: "unverified",
+    });
+  });
+
+  it("reports closed or unsupported runtimes without loading or inspecting another agent", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const tool = registeredTool(server, "inspect_own_mcp_server");
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "closed",
+      session: null,
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "session_closed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "claude",
+      lifecycle: "idle",
+      session: {},
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "claude",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "unsupported_provider",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
+    expect(spies.agentManager.resumeAgentFromPersistence).not.toHaveBeenCalled();
+    expect(spies.agentManager.getAgent).toHaveBeenCalledWith("self-agent");
+  });
+});
+
 describe("agent snapshot MCP serialization", () => {
   const logger = createTestLogger();
 

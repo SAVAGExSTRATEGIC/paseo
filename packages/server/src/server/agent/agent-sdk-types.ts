@@ -660,6 +660,29 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+export type AgentMcpServerInspection =
+  | { status: "not_configured"; server: string; advertisedTools: [] }
+  | {
+      status: "unavailable";
+      server: string;
+      reason:
+        | "no_active_thread"
+        | "provider_disconnected"
+        | "timeout"
+        | "provider_request_failed"
+        | "invalid_provider_response";
+      advertisedTools: [];
+    }
+  | { status: "not_advertised"; server: string; advertisedTools: [] }
+  | {
+      status: "observed";
+      server: string;
+      connection: string;
+      auth: string;
+      advertisedTools: string[];
+      toolCatalog: "listed" | "failed" | "not_exposed_by_provider_api";
+    };
+
 export interface AgentSession {
   readonly provider: AgentProvider;
   readonly id: string | null;
@@ -674,6 +697,8 @@ export interface AgentSession {
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
   getRuntimeInfo(): Promise<AgentRuntimeInfo>;
+  /** Inspect one configured server in the current provider runtime, when supported. */
+  inspectMcpServer?(server: string): Promise<AgentMcpServerInspection>;
   getAvailableModes(): Promise<AgentMode[]>;
   getCurrentMode(): Promise<string | null>;
   setMode(modeId: string): Promise<void | AgentProviderNotice>;
