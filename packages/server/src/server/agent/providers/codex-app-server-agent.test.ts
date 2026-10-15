@@ -1,6 +1,9 @@
+import { AgentManager } from "../agent-manager.js";
+import type { StoredAgentRecord } from "../agent-storage.js";
+import { listImportableProviderSessions } from "../import-sessions.js";
 import { describe, expect, test, vi } from "vitest";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { type Dirent, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6315,6 +6318,132 @@ describe("Codex importable sessions", () => {
       updatedAt: count - index,
     }));
   }
+
+  test("fills a picker search after excluding imported matches without exhausting the scan budget", async () => {
+    const threads = threadsUsedInReverseCreationOrder(10_001);
+    for (let index = 620; index < 636; index++) {
+      threads[index].preview = "HISTORICAL INVESTIGATION";
+    }
+    const listThreads = cappedThreadListHandler(threads);
+    const requests: string[] = [];
+    const provider = new CodexAppServerAgentClient(
+      createTestLogger(),
+      { command: [process.execPath, "-e", "process.stdin.resume()"] },
+      {
+        _createCodexClient: (child) => ({
+          async request(method, params) {
+            requests.push(method);
+            if (method === "initialize") return {};
+            if (method === "thread/list") return listThreads(params);
+            throw new Error(`Unexpected listing request: ${method}`);
+          },
+          notify() {},
+          async dispose() {
+            const closed = once(child, "close");
+            child.stdin.end();
+            await closed;
+          },
+        }),
+      },
+    );
+    const manager = new AgentManager({
+      clients: { codex: provider },
+      logger: createTestLogger(),
+    });
+    const result = await listImportableProviderSessions({
+      request: {
+        type: "fetch_recent_provider_sessions_request",
+        requestId: "picker-search",
+        providers: ["codex"],
+        query: "historical investigation",
+        limit: 15,
+      },
+      agentManager: manager,
+      agentStorage: {
+        list: async () => [
+          {
+            provider: "codex",
+            persistence: { provider: "codex", sessionId: "thread-620" },
+          } as StoredAgentRecord,
+        ],
+      },
+      providerSnapshotManager: { getProviderLabel: () => "Codex" },
+    });
+    expect(result.providerErrors).toEqual([]);
+    expect(result.entries.map((entry) => entry.providerHandleId)).toEqual(
+      Array.from({ length: 15 }, (_, index) => `thread-${621 + index}`),
+    );
+    expect(result.filteredAlreadyImportedCount).toBe(1);
+    expect(requests.filter((method) => method === "thread/list")).toHaveLength(7);
+  });
+
+  test("searches beyond the newest 500 threads before limiting matches", async () => {
+    const threads = threadsUsedInReverseCreationOrder(650);
+    threads[620].preview = "HISTORICAL INVESTIGATION";
+    const appServer = createFakeCodexAppServer({
+      "thread/list": cappedThreadListHandler(threads),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+    const sessions = await provider.listImportableSessions({
+      limit: 15,
+      scanLimit: 500,
+      query: "historical investigation",
+    });
+    expect(sessions.map((session) => session.providerHandleId)).toEqual(["thread-620"]);
+    appServer.assertNoErrors();
+  });
+
+  test("counts only workspace matches when a provider ignores its cwd filter", async () => {
+    const threads = threadsUsedInReverseCreationOrder(160);
+    threads.forEach((thread, index) => {
+      thread.preview = "HISTORICAL INVESTIGATION";
+      thread.cwd = index < 150 ? "/workspace/other" : "/workspace/project-a";
+    });
+    const list = cappedThreadListHandler(threads);
+    const appServer = createFakeCodexAppServer({
+      "thread/list": (params: unknown) =>
+        list({ ...(params as Record<string, unknown>), cwd: undefined }),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+    const sessions = await provider.listImportableSessions({
+      limit: 5,
+      query: "historical investigation",
+      cwd: "/workspace/project-a",
+    });
+    expect(sessions.map((session) => session.providerHandleId)).toEqual([
+      "thread-150",
+      "thread-151",
+      "thread-152",
+      "thread-153",
+      "thread-154",
+    ]);
+    appServer.assertNoErrors();
+  });
+
+  test("reports an incomplete search when the candidate budget is exhausted", async () => {
+    const appServer = createFakeCodexAppServer({
+      "thread/list": cappedThreadListHandler(threadsUsedInReverseCreationOrder(10_001)),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+    await expect(
+      provider.listImportableSessions({ limit: 15, query: "missing session" }),
+    ).rejects.toThrow("scan limit");
+    appServer.assertNoErrors();
+  });
+
+  test("reports a search cursor cycle rather than returning a false empty result", async () => {
+    const appServer = createFakeCodexAppServer({
+      "thread/list": () => ({
+        data: [{ id: "same", preview: "unrelated" }],
+        nextCursor: "same-page",
+      }),
+    });
+    const provider = createProviderWithFakeAppServer(appServer);
+    await expect(
+      provider.listImportableSessions({ query: "historical investigation" }),
+    ).rejects.toThrow("repeated a page");
+    appServer.assertNoErrors();
+  });
 
   test("fills the requested window across the pages Codex caps at 100 rows", async () => {
     const threads = threadsUsedInReverseCreationOrder(250);

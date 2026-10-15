@@ -1,3 +1,4 @@
+import { ImportSessionListingError } from "../import-session-error.js";
 import {
   getAgentStreamEventTurnId,
   type AgentPermissionAction,
@@ -248,7 +249,7 @@ const CODEX_MODES: AgentMode[] = [
 const DEFAULT_CODEX_MODE_ID = "auto";
 
 interface CodexAppServerClientLike {
-  request(method: string, params?: unknown): Promise<unknown>;
+  request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
   forkThread?(params: CodexThreadForkParams): Promise<CodexThreadForkResponse>;
   rollbackThread?(params: CodexThreadRollbackParams): Promise<CodexThreadRollbackResponse>;
   notify(method: string, params?: unknown): void;
@@ -921,6 +922,27 @@ const CodexModelListResponseSchema = z.object({
     .optional(),
 });
 
+function codexThreadWindowLimit(options: ListImportableSessionsOptions | undefined): number {
+  const limit = options?.limit ?? 20;
+  if (options?.query?.trim()) return options.resultLimit ?? limit;
+  const scanLimit = Math.min(options?.scanLimit ?? limit, 500);
+  // Fetch a wider recent window when filtering because many threads can belong
+  // to other cwds; query pagination counts matching rows separately.
+  return options?.cwd ? Math.max(scanLimit, 50) : scanLimit;
+}
+
+function createCodexThreadMatcher(cwd: string | undefined, query: string | undefined) {
+  const belongsToWorkspace = cwd ? createPathEquivalenceMatcher(cwd) : null;
+  return (thread: Record<string, unknown>) =>
+    (!belongsToWorkspace || (typeof thread.cwd === "string" && belongsToWorkspace(thread.cwd))) &&
+    (!query ||
+      [
+        thread.name,
+        thread.preview,
+        typeof thread.cwd === "string" ? path.basename(thread.cwd.replaceAll("\\", "/")) : null,
+      ].some((value) => typeof value === "string" && value.toLowerCase().includes(query)));
+}
+
 /**
  * Read the newest `window.limit` threads Codex knows about.
  *
@@ -932,17 +954,22 @@ const CodexModelListResponseSchema = z.object({
 async function readCodexThreadWindow(
   client: Pick<CodexAppServerClientLike, "request">,
   logger: Logger,
-  window: { limit: number; cwd?: string },
+  window: { limit: number; cwd?: string; query?: string },
 ): Promise<Array<Record<string, unknown>>> {
   // A thread updated while the scan is paging moves under `updated_at` order
   // and can come back on a later page, so identify each one and keep it once.
   // A row Codex sends without an id stands for itself.
   const threads = new Map<unknown, Record<string, unknown>>();
   let cursor: string | undefined;
-  while (threads.size < window.limit) {
+  const query = window.query?.trim().toLowerCase();
+  const matches = createCodexThreadMatcher(window.cwd, query);
+  // Search must apply the result limit after matching, not to the newest candidates.
+  // Keep metadata scans bounded; a truncated search is a failure, not an empty result.
+  const candidateLimit = query ? 10_000 : window.limit;
+  while (threads.size < candidateLimit) {
     const response = toObjectRecord(
       await client.request("thread/list", {
-        limit: window.limit - threads.size,
+        limit: Math.min(100, candidateLimit - threads.size),
         // Rank the window by last use. Codex pages by creation time by default,
         // which drops an old conversation that is still being worked in.
         // Older Codex builds ignore the unknown key and keep that order.
@@ -958,12 +985,23 @@ async function readCodexThreadWindow(
       if (!threads.has(identity)) threads.set(identity, thread);
     }
     const nextCursor = typeof response?.nextCursor === "string" ? response.nextCursor : undefined;
-    if (!nextCursor) break;
+    if (!nextCursor || [...threads.values()].filter(matches).length >= window.limit) break;
+    if (query && threads.size >= candidateLimit) {
+      throw new ImportSessionListingError(
+        "scan_limit",
+        "Session search reached its scan limit. Narrow the search or workspace and retry.",
+      );
+    }
     if (threads.size === sizeBeforePage) {
       // Every page that continues the scan brings a thread the scan has not
       // seen, so the loop is bounded by the window. A page that brings none
       // would let a Codex-side cursor bug (a stuck cursor, or a cycle) page for
       // ever behind a caller that has already timed out.
+      if (query)
+        throw new ImportSessionListingError(
+          "pagination_stalled",
+          "Session search could not finish because the provider repeated a page. Retry the search.",
+        );
       logger.warn(
         { cursor: nextCursor },
         "codex thread/list returned no new threads mid-scan, stopping the session scan",
@@ -972,7 +1010,7 @@ async function readCodexThreadWindow(
     }
     cursor = nextCursor;
   }
-  return [...threads.values()];
+  return [...threads.values()].filter(matches).slice(0, window.limit);
 }
 
 function filterCodexThreadsByCwd(
@@ -7338,24 +7376,40 @@ export class CodexAppServerAgentClient implements AgentClient {
   async listImportableSessions(
     options?: ListImportableSessionsOptions,
   ): Promise<ImportableProviderSession[]> {
+    options?.signal?.throwIfAborted();
+    const deadline = Date.now() + 40_000;
     const child = await this.spawnAppServer();
     const client =
       this.deps._createCodexClient?.(child, this.logger, () => ({})) ??
       new CodexAppServerClient(child, this.logger);
 
+    let closing: Promise<void> | undefined;
+    const close = () => (closing ??= client.dispose());
+    const onAbort = () => {
+      void close().catch((error) =>
+        this.logger.warn({ err: error }, "Failed to dispose session listing client"),
+      );
+    };
+    options?.signal?.addEventListener("abort", onAbort, { once: true });
+    const listingClient = {
+      request: (method: string, params?: unknown) => {
+        options?.signal?.throwIfAborted();
+        const remaining = deadline - Date.now();
+        if (remaining <= 0)
+          throw new ImportSessionListingError("timeout", "Session listing deadline exceeded");
+        return client.request(method, params, remaining);
+      },
+    };
     try {
-      await client.request("initialize", buildCodexAppServerInitializeParams());
+      await listingClient.request("initialize", buildCodexAppServerInitializeParams());
       client.notify("initialized", {});
 
       const limit = options?.limit ?? 20;
-      const scanLimit = Math.min(options?.scanLimit ?? limit, 500);
-      // thread/list returns the cheap `cwd` field. Fetch a wider window when
-      // filtering since most threads will be from other cwds, then keep the
-      // local realpath-aware filter for symlink-equivalent workspace paths.
-      const listLimit = options?.cwd ? Math.max(scanLimit, 50) : scanLimit;
-      const allThreads = await readCodexThreadWindow(client, this.logger, {
+      const listLimit = codexThreadWindowLimit(options);
+      const allThreads = await readCodexThreadWindow(listingClient, this.logger, {
         limit: listLimit,
         cwd: options?.cwd,
+        query: options?.query,
       });
       const threads = filterCodexThreadsByCwd(allThreads, options?.cwd);
       return threads.slice(0, limit).map((thread) => {
@@ -7378,7 +7432,8 @@ export class CodexAppServerAgentClient implements AgentClient {
         };
       });
     } finally {
-      await client.dispose();
+      options?.signal?.removeEventListener("abort", onAbort);
+      await close();
     }
   }
 

@@ -95,12 +95,16 @@ import {
   type ProviderSubagentDescriptor,
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
-import { withTimeout } from "../../utils/promise-timeout.js";
+import {
+  ImportSessionListingError,
+  getImportSessionErrorKind,
+  type ImportSessionErrorKind,
+} from "./import-session-error.js";
 import { extractAttention } from "../persistence-hooks.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
-const IMPORTABLE_SESSION_LIST_TIMEOUT_MS = 90_000;
+const IMPORTABLE_SESSION_LIST_TIMEOUT_MS = 45_000;
 const STORED_AGENT_CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: false,
   supportsSessionPersistence: true,
@@ -272,6 +276,7 @@ export interface ManagedImportableProviderSession extends ImportableProviderSess
 export interface ImportableSessionProviderError {
   provider: AgentProvider;
   message: string;
+  kind?: ImportSessionErrorKind;
 }
 
 export interface ManagedImportableSessionsResult {
@@ -1015,17 +1020,33 @@ export class AgentManager {
     );
     const providerResults = await Promise.all(
       providerEntries.map(async ([provider, client]) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () =>
+            controller.abort(
+              new ImportSessionListingError("timeout", "Session listing deadline exceeded"),
+            ),
+          IMPORTABLE_SESSION_LIST_TIMEOUT_MS,
+        );
+        const signal = options?.signal
+          ? AbortSignal.any([controller.signal, options.signal])
+          : controller.signal;
+        let onAbort: (() => void) | undefined;
         try {
-          const sessions = await withTimeout(
-            client.listImportableSessions!({
-              limit: options?.limit,
-              query: options?.query,
-              scanLimit: options?.scanLimit,
-              cwd: options?.cwd,
-            }),
-            IMPORTABLE_SESSION_LIST_TIMEOUT_MS,
-            `Timed out listing importable sessions for provider '${provider}' after ${IMPORTABLE_SESSION_LIST_TIMEOUT_MS}ms`,
-          );
+          signal.throwIfAborted();
+          const aborted = new Promise<never>((_, reject) => {
+            onAbort = () => reject(signal.reason);
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+          const listing = client.listImportableSessions!({
+            signal,
+            limit: options?.limit,
+            ...(options?.resultLimit !== undefined ? { resultLimit: options.resultLimit } : {}),
+            query: options?.query,
+            scanLimit: options?.scanLimit,
+            cwd: options?.cwd,
+          });
+          const sessions = await Promise.race([listing, aborted]);
           return {
             sessions: sessions
               .filter((session) => matchesImportableSessionQuery(session, options?.query))
@@ -1041,9 +1062,14 @@ export class AgentManager {
             sessions: [],
             error: {
               provider,
+              kind: getImportSessionErrorKind(error),
               message: error instanceof Error ? error.message : String(error),
             },
           };
+        } finally {
+          clearTimeout(timeout);
+          if (onAbort) signal.removeEventListener("abort", onAbort);
+          controller.abort();
         }
       }),
     );

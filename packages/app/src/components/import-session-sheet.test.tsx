@@ -485,6 +485,7 @@ describe("ImportSessionSheet", () => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         cwd: "/repo/paseo",
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
       });
     });
@@ -547,6 +548,7 @@ describe("ImportSessionSheet", () => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         cwd: "/repo/paseo",
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
       });
     });
@@ -691,12 +693,14 @@ describe("ImportSessionSheet", () => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         cwd: "/repo/paseo",
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
       });
     });
     expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
       cwd: "/repo/paseo",
       providers: ["codex"],
+      signal: expect.any(AbortSignal),
       limit: 15,
     });
     expect(fetchRecentProviderSessions).not.toHaveBeenCalledWith(
@@ -705,6 +709,7 @@ describe("ImportSessionSheet", () => {
     expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
       cwd: "/repo/paseo",
       providers: ["z-ai"],
+      signal: expect.any(AbortSignal),
       limit: 15,
     });
 
@@ -886,6 +891,7 @@ describe("ImportSessionSheet", () => {
     await waitFor(() => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
       });
     });
@@ -1090,6 +1096,7 @@ describe("ImportSessionSheet", () => {
     await waitFor(() => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
         query: "invoice",
       });
@@ -1144,6 +1151,7 @@ describe("ImportSessionSheet", () => {
     await waitFor(() => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 45,
       });
     });
@@ -1199,6 +1207,7 @@ describe("ImportSessionSheet", () => {
       expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
         cwd: "/repo/paseo",
         providers: ["claude"],
+        signal: expect.any(AbortSignal),
         limit: 15,
       });
     });
@@ -1261,6 +1270,7 @@ describe("ImportSessionSheet", () => {
     await screen.findByText("Foreign session");
     expect(fetchRecentProviderSessions).toHaveBeenCalledWith({
       providers: ["claude"],
+      signal: expect.any(AbortSignal),
       limit: 15,
     });
 
