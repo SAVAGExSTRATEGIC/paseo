@@ -3644,6 +3644,60 @@ test("fetch_agent_request discards MCP status after its resident session closes"
     });
 });
 
+test("fetch_agent_request discards MCP status after the resident provider session changes", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "restarting-agent", cwd: "/tmp/restarting-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  let release!: (value: unknown) => void;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const resident = {
+    session: {
+      inspectMcpServer: () => {
+        markStarted();
+        return pending;
+      },
+    },
+  };
+  session.agentManager.getAgent = () => resident;
+
+  const inspection = session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-restarting-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+  await started;
+  resident.session = { inspectMcpServer: async () => ({ status: "not_advertised" }) };
+  release({
+    status: "observed",
+    server: "router",
+    connection: "connected",
+    auth: "unknown",
+    advertisedTools: ["search"],
+    toolCatalog: "listed",
+  });
+  await inspection;
+  expect(emitted[0]?.type).toBe("fetch_agent_response");
+  if (emitted[0]?.type === "fetch_agent_response")
+    expect(emitted[0].payload.mcpInspection).toEqual({
+      status: "unavailable",
+      server: "router",
+      reason: "session_closed",
+      advertisedTools: [],
+    });
+});
+
 test("git branch workspace uses branch as canonical name", async () => {
   const session = createSessionForWorkspaceTests();
   session.workspaceRegistry.list = async () => [

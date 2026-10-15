@@ -2002,15 +2002,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       async ({ server }) => {
         const caller = resolveCallerAgent();
         if (!caller) throw new Error("Agent-scoped session unavailable");
+        const providerSession = caller.session;
         let inspection;
-        if (!caller.session) {
+        if (!providerSession) {
           inspection = {
             status: "unavailable",
             server,
             reason: "session_closed",
             advertisedTools: [],
           };
-        } else if (!caller.session.inspectMcpServer) {
+        } else if (!providerSession.inspectMcpServer) {
           inspection = {
             status: "unavailable",
             server,
@@ -2018,7 +2019,24 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             advertisedTools: [],
           };
         } else {
-          inspection = await caller.session.inspectMcpServer(server);
+          try {
+            inspection = await providerSession.inspectMcpServer(server);
+          } catch {
+            inspection = {
+              status: "unavailable",
+              server,
+              reason: "provider_request_failed",
+              advertisedTools: [],
+            };
+          }
+        }
+        if (agentManager.getAgent(callerAgentId) !== caller || caller.session !== providerSession) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "session_closed",
+            advertisedTools: [],
+          };
         }
         return {
           content: [],

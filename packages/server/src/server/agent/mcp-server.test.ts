@@ -5733,8 +5733,84 @@ describe("own-session MCP inspection", () => {
       },
       harmlessExecution: "unverified",
     });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: {
+        inspectMcpServer: async () => {
+          throw new Error("private provider token detail");
+        },
+      },
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "provider_request_failed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
     expect(spies.agentManager.resumeAgentFromPersistence).not.toHaveBeenCalled();
     expect(spies.agentManager.getAgent).toHaveBeenCalledWith("self-agent");
+  });
+
+  it("discards a status reply when its provider session is replaced", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    let release!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const caller = {
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: {
+        inspectMcpServer: () => {
+          markStarted();
+          return pending;
+        },
+      },
+    };
+    spies.agentManager.getAgent.mockReturnValue(caller as unknown as ManagedAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const inspection = registeredTool(server, "inspect_own_mcp_server").handler({
+      server: "router",
+    });
+    await started;
+    caller.session = { inspectMcpServer: async () => ({ status: "not_advertised" }) };
+    release({
+      status: "observed",
+      server: "router",
+      connection: "connected",
+      auth: "unknown",
+      advertisedTools: ["search"],
+      toolCatalog: "listed",
+    });
+    expect((await inspection).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "session_closed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
   });
 });
 

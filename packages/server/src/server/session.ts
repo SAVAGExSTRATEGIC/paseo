@@ -7599,14 +7599,15 @@ export class Session {
     let mcpInspection: AgentMcpServerInspection | undefined;
     if (mcpServer) {
       const resident = this.agentManager.getAgent(resolved.agentId);
-      if (!resident?.session) {
+      const providerSession = resident?.session;
+      if (!providerSession) {
         mcpInspection = {
           status: "unavailable",
           server: mcpServer,
           reason: "session_closed",
           advertisedTools: [],
         };
-      } else if (!resident.session.inspectMcpServer) {
+      } else if (!providerSession.inspectMcpServer) {
         mcpInspection = {
           status: "unavailable",
           server: mcpServer,
@@ -7615,7 +7616,7 @@ export class Session {
         };
       } else {
         try {
-          mcpInspection = await resident.session.inspectMcpServer(mcpServer);
+          mcpInspection = await providerSession.inspectMcpServer(mcpServer);
         } catch {
           mcpInspection = {
             status: "unavailable",
@@ -7625,7 +7626,11 @@ export class Session {
           };
         }
       }
-      if (resident && this.agentManager.getAgent(resolved.agentId) !== resident) {
+      if (
+        resident &&
+        (this.agentManager.getAgent(resolved.agentId) !== resident ||
+          resident.session !== providerSession)
+      ) {
         mcpInspection = {
           status: "unavailable",
           server: mcpServer,
