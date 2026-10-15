@@ -15,6 +15,7 @@ import type {
   AgentRunOptions,
   AgentSession,
   AgentSessionConfig,
+  AgentMcpServerInspection,
   AgentStreamEvent,
   SteerActiveTurnOptions,
   SteerResult,
@@ -26,6 +27,7 @@ import { runProviderTurn } from "../../provider-runner.js";
 
 import { composeSystemPromptParts } from "../../../system-prompt.js";
 import { raceProviderRefreshAbort } from "../../../provider-refresh-deadline.js";
+import { withTimeout } from "../../../../../utils/promise-timeout.js";
 
 import { type V2Connection } from "./runtime.js";
 import { modelRef, modesFromV2 } from "./mapping.js";
@@ -36,6 +38,39 @@ import { commands } from "./commands.js";
 import { messages } from "./history.js";
 import { SessionPermissions } from "./permissions.js";
 import { SessionUsage } from "./usage.js";
+
+type OpenCodeMcpCatalog = Awaited<ReturnType<V2Connection["client"]["mcp"]["list"]>>;
+
+function parseOpenCodeMcpInspection(
+  server: string,
+  cwd: string,
+  catalog: OpenCodeMcpCatalog,
+): AgentMcpServerInspection {
+  const invalid = (): AgentMcpServerInspection => ({
+    status: "unavailable",
+    server,
+    reason: "invalid_provider_response",
+    advertisedTools: [],
+  });
+  if (!Array.isArray(catalog?.data) || catalog.location?.directory !== cwd) return invalid();
+  const matching = catalog.data.filter((item) => item?.name === server);
+  if (matching.length === 0) return { status: "not_advertised", server, advertisedTools: [] };
+  if (matching.length !== 1) return invalid();
+  const state = matching[0]?.status?.status;
+  if (
+    typeof state !== "string" ||
+    !["connected", "pending", "disabled", "failed", "needs_auth"].includes(state)
+  )
+    return invalid();
+  return {
+    status: "observed",
+    server,
+    connection: state,
+    auth: state === "needs_auth" ? "needs_auth" : "unknown",
+    advertisedTools: [],
+    toolCatalog: "not_exposed_by_provider_api",
+  };
+}
 
 export class OpenCodeV2Session implements AgentSession {
   readonly provider = "opencode";
@@ -273,6 +308,54 @@ export class OpenCodeV2Session implements AgentSession {
       modeId: this.info.agent ?? null,
       thinkingOptionId: this.info.model?.variant ?? null,
     };
+  }
+  async inspectMcpServer(server: string): Promise<AgentMcpServerInspection> {
+    if (!Object.hasOwn(this.config.mcpServers ?? {}, server))
+      return { status: "not_configured", server, advertisedTools: [] };
+    if (!this.inspectionConnectionCurrent(this.connection))
+      return {
+        status: "unavailable",
+        server,
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      };
+    const connection = this.connection;
+    let catalog;
+    try {
+      catalog = await withTimeout(
+        connection.client.mcp.list({ location: { directory: this.config.cwd } }),
+        5_000,
+        "OpenCode MCP status request timed out",
+      );
+    } catch (error) {
+      if (!this.inspectionConnectionCurrent(connection))
+        return {
+          status: "unavailable",
+          server,
+          reason: "provider_disconnected",
+          advertisedTools: [],
+        };
+      return {
+        status: "unavailable",
+        server,
+        reason:
+          error instanceof Error && error.message === "OpenCode MCP status request timed out"
+            ? "timeout"
+            : "provider_request_failed",
+        advertisedTools: [],
+      };
+    }
+    if (!this.inspectionConnectionCurrent(connection))
+      return {
+        status: "unavailable",
+        server,
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      };
+    return parseOpenCodeMcpInspection(server, this.config.cwd, catalog);
+  }
+  private inspectionConnectionCurrent(connection: V2Connection): boolean {
+    return !this.closed && !this.exited && !this.reconnecting && this.connection === connection;
   }
   async getAvailableModes() {
     return this.modes;

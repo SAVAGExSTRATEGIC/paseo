@@ -601,6 +601,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     if (!isPaseoToolEnabled(options.paseoToolPolicy, name)) {
       return;
     }
+    if (
+      name.startsWith("browser_") &&
+      options.paseoToolPolicy?.enabled === false &&
+      options.paseoToolPolicy.browserToolsEnabled === true &&
+      options.browserToolsBroker?.requiresPassport !== true
+    ) {
+      return;
+    }
     tools.set(name, {
       name,
       title: config.title,
@@ -1989,6 +1997,67 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return response;
     },
   );
+
+  if (callerAgentId) {
+    registerTool(
+      "inspect_own_mcp_server",
+      {
+        title: "Inspect own MCP server",
+        description:
+          "Read one configured MCP server's current provider connection and advertised tool names for this session. This does not execute a tool or change configuration.",
+        inputSchema: { server: z.string().trim().min(1).max(200) },
+      },
+      async ({ server }) => {
+        const caller = resolveCallerAgent();
+        if (!caller) throw new Error("Agent-scoped session unavailable");
+        const providerSession = caller.session;
+        let inspection;
+        if (!providerSession) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "session_closed",
+            advertisedTools: [],
+          };
+        } else if (!providerSession.inspectMcpServer) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "unsupported_provider",
+            advertisedTools: [],
+          };
+        } else {
+          try {
+            inspection = await providerSession.inspectMcpServer(server);
+          } catch {
+            inspection = {
+              status: "unavailable",
+              server,
+              reason: "provider_request_failed",
+              advertisedTools: [],
+            };
+          }
+        }
+        if (agentManager.getAgent(callerAgentId) !== caller || caller.session !== providerSession) {
+          inspection = {
+            status: "unavailable",
+            server,
+            reason: "session_closed",
+            advertisedTools: [],
+          };
+        }
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            agentId: caller.id,
+            provider: caller.provider,
+            inspection,
+            harmlessExecution: "unverified",
+          }),
+        };
+      },
+    );
+  }
 
   registerTool(
     "get_agent_status",

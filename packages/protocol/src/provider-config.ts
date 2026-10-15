@@ -30,6 +30,7 @@ export const ProviderRuntimeSettingsSchema = z.object({
 
 export const ProviderPaseoToolsPolicySchema = z.object({
   enabled: z.boolean().optional(),
+  browserToolsEnabled: z.boolean().optional(),
   disabledTools: z.array(z.string()).optional(),
 });
 

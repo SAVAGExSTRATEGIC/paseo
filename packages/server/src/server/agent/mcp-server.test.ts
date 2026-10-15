@@ -1029,6 +1029,57 @@ describe("browser MCP tools", () => {
     expect(lookupTool(server, "browser_snapshot")).toBeDefined();
   });
 
+  it("exposes only browser tools for an explicitly browser-only provider", async () => {
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      browserToolsEnabled: true,
+      browserToolsBroker: Object.assign(
+        new FakeBrowserToolsBroker({
+          requestId: "req-browser-only",
+          ok: true,
+          result: { command: "list_tabs", tabs: [] },
+        }),
+        { requiresPassport: true },
+      ) as BrowserToolsBroker,
+      callerAgentId: "agent-1",
+      paseoToolPolicy: { enabled: false, browserToolsEnabled: true },
+      logger,
+    });
+    const client = await connectInMemoryMcpClient(server);
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toContain("browser_list_tabs");
+      expect(names).not.toContain("create_agent");
+      expect(names).not.toContain("list_agents");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("keeps browser-only tools unavailable without a required paired passport", async () => {
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      browserToolsEnabled: true,
+      browserToolsBroker: new FakeBrowserToolsBroker({
+        requestId: "req-unpaired",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      }) as BrowserToolsBroker,
+      callerAgentId: "agent-1",
+      paseoToolPolicy: { enabled: false, browserToolsEnabled: true },
+      logger,
+    });
+    expect(lookupTool(server, "browser_list_tabs")).toBeUndefined();
+    expect(lookupTool(server, "create_agent")).toBeUndefined();
+  });
+
   it("filters policy-disabled tools from MCP listing and calls", async () => {
     const agentManager = new BoundaryAgentManagerFake();
     const agentStorage = new BoundaryAgentStorageFake();
@@ -5640,6 +5691,176 @@ describe("speak MCP tool", () => {
     });
     const tool = lookupTool(server, "speak");
     expect(tool).toBeUndefined();
+  });
+});
+
+describe("own-session MCP inspection", () => {
+  const logger = createTestLogger();
+
+  it("returns only a requested server's sanitized provider catalog", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const inspectMcpServer = vi.fn().mockResolvedValue({
+      status: "observed",
+      server: "router",
+      connection: "connected",
+      auth: "bearerToken",
+      advertisedTools: ["read"],
+      toolCatalog: "listed",
+    });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: { inspectMcpServer },
+    } as unknown as ManagedAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const result = await registeredTool(server, "inspect_own_mcp_server").handler({
+      server: "router",
+    });
+    expect(inspectMcpServer).toHaveBeenCalledExactlyOnceWith("router");
+    expect(result.structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "observed",
+        server: "router",
+        connection: "connected",
+        auth: "bearerToken",
+        advertisedTools: ["read"],
+        toolCatalog: "listed",
+      },
+      harmlessExecution: "unverified",
+    });
+  });
+
+  it("reports closed or unsupported runtimes without loading or inspecting another agent", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const tool = registeredTool(server, "inspect_own_mcp_server");
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "closed",
+      session: null,
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "session_closed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "claude",
+      lifecycle: "idle",
+      session: {},
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "claude",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "unsupported_provider",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
+    spies.agentManager.getAgent.mockReturnValue({
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: {
+        inspectMcpServer: async () => {
+          throw new Error("private provider token detail");
+        },
+      },
+    } as unknown as ManagedAgent);
+    expect((await tool.handler({ server: "router" })).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "provider_request_failed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
+    expect(spies.agentManager.resumeAgentFromPersistence).not.toHaveBeenCalled();
+    expect(spies.agentManager.getAgent).toHaveBeenCalledWith("self-agent");
+  });
+
+  it("discards a status reply when its provider session is replaced", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    let release!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const caller = {
+      id: "self-agent",
+      provider: "codex",
+      lifecycle: "idle",
+      session: {
+        inspectMcpServer: () => {
+          markStarted();
+          return pending;
+        },
+      },
+    };
+    spies.agentManager.getAgent.mockReturnValue(caller as unknown as ManagedAgent);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "self-agent",
+      logger,
+    });
+    const inspection = registeredTool(server, "inspect_own_mcp_server").handler({
+      server: "router",
+    });
+    await started;
+    caller.session = { inspectMcpServer: async () => ({ status: "not_advertised" }) };
+    release({
+      status: "observed",
+      server: "router",
+      connection: "connected",
+      auth: "unknown",
+      advertisedTools: ["search"],
+      toolCatalog: "listed",
+    });
+    expect((await inspection).structuredContent).toEqual({
+      agentId: "self-agent",
+      provider: "codex",
+      inspection: {
+        status: "unavailable",
+        server: "router",
+        reason: "session_closed",
+        advertisedTools: [],
+      },
+      harmlessExecution: "unverified",
+    });
   });
 });
 

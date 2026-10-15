@@ -8,6 +8,7 @@ import type {
   AgentModelDefinition,
   AgentMode,
   AgentSessionConfig,
+  AgentSession,
   ProviderCatalog,
 } from "./agent-sdk-types.js";
 
@@ -507,10 +508,28 @@ import {
   AGENT_PROVIDER_DEFINITIONS,
   buildProviderRegistry,
   createAllClients,
+  wrapSessionProvider,
 } from "./provider-registry.js";
 import { FakeOmp } from "./providers/omp/test-utils/fake-omp.js";
 
 const logger = createTestLogger();
+
+test("provider aliases forward resident MCP inspection without changing the server name", async () => {
+  const inspectMcpServer = vi.fn(async (server: string) => ({
+    status: "not_advertised" as const,
+    server,
+    advertisedTools: [] as [],
+  }));
+  const wrapped = wrapSessionProvider("codex-lsa", {
+    inspectMcpServer,
+  } as unknown as AgentSession);
+  await expect(wrapped.inspectMcpServer?.("codex-savage-mcp-router")).resolves.toEqual({
+    status: "not_advertised",
+    server: "codex-savage-mcp-router",
+    advertisedTools: [],
+  });
+  expect(inspectMcpServer).toHaveBeenCalledExactlyOnceWith("codex-savage-mcp-router");
+});
 
 beforeEach(() => {
   mockState.reset();

@@ -460,6 +460,7 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
       }
     },
     getRuntimeInfo: async () => mapRuntimeInfo(provider, await inner.getRuntimeInfo()),
+    inspectMcpServer: inner.inspectMcpServer?.bind(inner),
     getAvailableModes: () => inner.getAvailableModes(),
     getCurrentMode: () => inner.getCurrentMode(),
     setMode: (modeId) => inner.setMode(modeId),

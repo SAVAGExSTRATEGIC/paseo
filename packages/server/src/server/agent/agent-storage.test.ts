@@ -546,8 +546,10 @@ describe("AgentStorage", () => {
     const reloaded = new AgentStorage(storagePath, logger);
     const before = await reloaded.list();
     expect(before.map((r) => r.id)).toContain(agentId);
+    expect(await reloaded.hasDuplicateRecordPaths(agentId)).toBe(true);
 
     await reloaded.remove(agentId);
+    expect(await reloaded.hasDuplicateRecordPaths(agentId)).toBe(false);
 
     const hasAnyRecordFile = async () => {
       const projects = await fs

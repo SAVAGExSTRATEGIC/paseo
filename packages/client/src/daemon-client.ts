@@ -28,6 +28,7 @@ import {
   RestartRequestedStatusPayloadSchema,
   ShutdownRequestedStatusPayloadSchema,
   DaemonUpdateResponseSchema,
+  FetchAgentsResponseMessageSchema,
   SessionInboundMessageSchema,
   type ActiveTurnBehavior,
   type ServerInfoStatusPayload,
@@ -661,6 +662,7 @@ export interface FetchAgentOptions {
   agentId: string;
   requestId?: string;
   timeout?: number;
+  mcpServer?: string;
 }
 type LegacyFetchAgentOptions = Omit<FetchAgentOptions, "agentId">;
 export interface FetchAgentTimelineOptions {
@@ -754,10 +756,7 @@ export interface DaemonPairingOfferOptions {
   timeout?: number;
 }
 type DaemonUpdateResponse = z.infer<typeof DaemonUpdateResponseSchema>;
-type FetchAgentsPayload = Extract<
-  SessionOutboundMessage,
-  { type: "fetch_agents_response" }
->["payload"];
+type FetchAgentsPayload = z.infer<typeof FetchAgentsResponseMessageSchema>["payload"];
 type FetchAgentsRequest = Extract<SessionInboundMessage, { type: "fetch_agents_request" }>;
 export type FetchAgentsOptions = Omit<FetchAgentsRequest, "type" | "requestId"> & {
   signal?: AbortSignal;
@@ -920,6 +919,10 @@ type WorkspaceSetupStatusPayload = WorkspaceSetupStatusResponseMessage["payload"
 export interface FetchAgentResult {
   agent: AgentSnapshotPayload;
   project: ProjectPlacementPayload | null;
+  mcpInspection?: Extract<
+    SessionOutboundMessage,
+    { type: "fetch_agent_response" }
+  >["payload"]["mcpInspection"];
 }
 
 export interface WaitForFinishResult {
@@ -2327,6 +2330,29 @@ export class DaemonClient {
     );
   }
 
+  async requestBrowserHostChallenge(): Promise<
+    Extract<
+      SessionOutboundMessage,
+      { type: "browser.host.challenge.response" }
+    >["payload"]["challenge"]
+  > {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "browser.host.challenge.request",
+      requestId,
+    });
+    return this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (response) =>
+        response.type === "browser.host.challenge.response" &&
+        response.payload.requestId === requestId
+          ? response.payload.challenge
+          : null,
+    });
+  }
+
   observeEvents(
     events: SessionEventSubscription[],
     options?: { signal?: AbortSignal; notifications?: boolean },
@@ -2788,6 +2814,7 @@ export class DaemonClient {
       type: "fetch_agent_request",
       requestId: resolvedRequestId,
       agentId: options.agentId,
+      ...(options.mcpServer ? { mcpServer: options.mcpServer } : {}),
     });
     const payload = await this.sendRequest({
       requestId: resolvedRequestId,
@@ -2810,7 +2837,11 @@ export class DaemonClient {
     if (!payload.agent) {
       return null;
     }
-    return { agent: payload.agent, project: payload.project ?? null };
+    return {
+      agent: payload.agent,
+      project: payload.project ?? null,
+      ...(payload.mcpInspection ? { mcpInspection: payload.mcpInspection } : {}),
+    };
   }
 
   // ============================================================================
