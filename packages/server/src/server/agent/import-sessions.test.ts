@@ -366,6 +366,7 @@ test("listImportableProviderSessions requests a bounded deep scan for search res
 
   expect(listImportableSessions).toHaveBeenCalledWith({
     limit: 500,
+    resultLimit: 10,
     query: "invoice",
     scanLimit: 500,
     providerFilter: undefined,

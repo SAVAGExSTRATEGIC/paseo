@@ -10884,7 +10884,7 @@ test("listImportableSessions returns healthy rows alongside thrown and timed-out
     });
 
     const resultPromise = manager.listImportableSessions();
-    await vi.advanceTimersByTimeAsync(90_000);
+    await vi.advanceTimersByTimeAsync(45_000);
 
     await expect(resultPromise).resolves.toEqual({
       sessions: [
@@ -10902,13 +10902,55 @@ test("listImportableSessions returns healthy rows alongside thrown and timed-out
         { provider: "codex", message: "codex listing failed" },
         {
           provider: "pi",
-          message: "Timed out listing importable sessions for provider 'pi' after 90000ms",
+          message: "Session listing deadline exceeded",
+          kind: "timeout",
         },
       ],
     });
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("listImportableSessions classifies native Codex transport timeouts", async () => {
+  const client = new RecordingPersistedAgentsClient("codex");
+  client.listImportableSessions = async () => {
+    throw new DOMException("Codex app-server request timed out for thread/list", "TimeoutError");
+  };
+  const manager = new AgentManager({
+    clients: { codex: client },
+    providerDefinitions: { codex: { enabled: true, derivedFromProviderId: null } },
+    logger,
+  });
+  const result = await manager.listImportableSessions();
+  expect(result.providerErrors).toEqual([
+    {
+      provider: "codex",
+      kind: "timeout",
+      message: "Codex app-server request timed out for thread/list",
+    },
+  ]);
+});
+
+test("listImportableSessions settles an aborted request even when a provider ignores cancellation", async () => {
+  const client = new RecordingPersistedAgentsClient("codex");
+  let providerSignal: AbortSignal | undefined;
+  client.listImportableSessions = async (options) => {
+    providerSignal = options?.signal;
+    return await new Promise(() => undefined);
+  };
+  const manager = new AgentManager({
+    clients: { codex: client },
+    providerDefinitions: { codex: { enabled: true, derivedFromProviderId: null } },
+    logger,
+  });
+  const controller = new AbortController();
+  const pending = manager.listImportableSessions({ signal: controller.signal });
+  controller.abort();
+  const result = await pending;
+  expect(providerSignal?.aborted).toBe(true);
+  expect(result.sessions).toEqual([]);
+  expect(result.providerErrors).toHaveLength(1);
 });
 
 test("listImportableSessions searches every provider result before global ranking", async () => {

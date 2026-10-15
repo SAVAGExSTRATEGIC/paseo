@@ -201,6 +201,28 @@ describe("collectProviderErrorRows", () => {
     expect(rows).toEqual([{ provider: "codex", label: "Codex" }]);
   });
 
+  it("shows safe retry guidance without exposing raw provider failures", () => {
+    const message =
+      "Session search reached its scan limit. Narrow the search or workspace and retry.";
+    for (const kind of ["scan_limit" as const, undefined]) {
+      const rows = collectProviderErrorRows(
+        ["codex"],
+        [
+          settled({
+            entries: [],
+            providerErrors: [
+              { provider: "codex", message: "private diagnostics", ...(kind ? { kind } : {}) },
+            ],
+          }),
+        ],
+        new Map(),
+      );
+      expect(rows).toEqual([
+        { provider: "codex", label: "codex", ...(kind ? { guidance: message } : {}) },
+      ]);
+    }
+  });
+
   it("uses provider id when the label map has no entry", () => {
     const rows = collectProviderErrorRows(
       ["codex"],

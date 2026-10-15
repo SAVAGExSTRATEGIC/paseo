@@ -3396,6 +3396,107 @@ test("fetch_recent_provider_sessions_request forwards providerFilter to agent ma
   ]);
 });
 
+test("new import searches cancel overlapping provider listings and settle their RPCs", async () => {
+  const emitted: Array<{ type: string; payload: unknown }> = [];
+  const session = createSessionForWorkspaceTests();
+  session.emit = (message) => emitted.push(message as { type: string; payload: unknown });
+  session.agentManager.listAgents = () => [];
+  session.agentStorage.list = async () => [];
+  const signals: AbortSignal[] = [];
+  session.agentManager.listImportableSessions = async (options?: unknown) => {
+    const signal = (options as { signal: AbortSignal }).signal;
+    signals.push(signal);
+    if (signals.length < 3)
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+    return { sessions: [], providerErrors: [] };
+  };
+  const first = session.handleMessage({
+    type: "fetch_recent_provider_sessions_request",
+    requestId: "first",
+    providers: ["codex"],
+  });
+  await vi.waitFor(() => expect(signals).toHaveLength(1));
+  const independent = session.handleMessage({
+    type: "fetch_recent_provider_sessions_request",
+    requestId: "independent",
+    providers: ["claude"],
+  });
+  await vi.waitFor(() => expect(signals).toHaveLength(2));
+  expect(signals[0].aborted).toBe(false);
+  const replacement = session.handleMessage({
+    type: "fetch_recent_provider_sessions_request",
+    requestId: "replacement",
+    providers: ["codex"],
+  });
+  await Promise.all([first, replacement]);
+  expect(signals[0].aborted).toBe(true);
+  expect(signals[1].aborted).toBe(false);
+  expect(emitted).toContainEqual(
+    expect.objectContaining({
+      type: "rpc_error",
+      payload: expect.objectContaining({ requestId: "first" }),
+    }),
+  );
+  expect(emitted).toContainEqual(
+    expect.objectContaining({
+      type: "fetch_recent_provider_sessions_response",
+      payload: expect.objectContaining({ requestId: "replacement" }),
+    }),
+  );
+  const finish = session.handleMessage({
+    type: "fetch_recent_provider_sessions_request",
+    requestId: "finish",
+    providers: ["claude"],
+  });
+  await Promise.all([independent, finish]);
+});
+
+test("import listing cancellation is isolated by socket source and stops on disconnect", async () => {
+  const session = createSessionForWorkspaceTests();
+  session.emit = () => {};
+  session.agentManager.listAgents = () => [];
+  session.agentStorage.list = async () => [];
+  const signals: AbortSignal[] = [];
+  session.agentManager.listImportableSessions = async (options?: unknown) => {
+    const signal = (options as { signal: AbortSignal }).signal;
+    signals.push(signal);
+    await new Promise<void>((resolve) =>
+      signal.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    return { sessions: [], providerErrors: [] };
+  };
+  const firstSource = {};
+  const secondSource = {};
+  const first = session.handleMessage(
+    {
+      type: "fetch_recent_provider_sessions_request",
+      requestId: "first-source",
+      providers: ["codex"],
+    },
+    firstSource,
+  );
+  await vi.waitFor(() => expect(signals).toHaveLength(1));
+  const second = session.handleMessage(
+    {
+      type: "fetch_recent_provider_sessions_request",
+      requestId: "second-source",
+      providers: ["codex"],
+    },
+    secondSource,
+  );
+  await vi.waitFor(() => expect(signals).toHaveLength(2));
+  expect(signals[0].aborted).toBe(false);
+  await session.delivery.detach(secondSource);
+  await second;
+  expect(signals[1].aborted).toBe(true);
+  expect(signals[0].aborted).toBe(false);
+  await session.delivery.detach(firstSource);
+  await first;
+  expect(signals[0].aborted).toBe(true);
+});
+
 test("fetch_recent_provider_sessions_request reports filteredAlreadyImportedCount when all candidates are already imported", async () => {
   const emitted: Array<{ type: string; payload: unknown }> = [];
   const session = createSessionForWorkspaceTests();
