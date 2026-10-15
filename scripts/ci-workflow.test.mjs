@@ -10,6 +10,107 @@ const nixWorkflowPath = new URL(".github/workflows/nix.yml", repoRoot);
 const filtersPath = new URL(".github/ci-paths.yml", repoRoot);
 const serverTsconfigPath = new URL("packages/server/tsconfig.server.json", repoRoot);
 const desktopPackagePath = new URL("packages/desktop/package.json", repoRoot);
+const tartWorkflowPath = new URL(".github/workflows/local-tart-ci.yml", repoRoot);
+
+function tartSourceFixture() {
+  const repository = { id: 1382441324, full_name: "SAVAGExSTRATEGIC/paseo" };
+  const main = "a".repeat(40);
+  const head = "b".repeat(40);
+  return {
+    env: {
+      GITHUB_REPOSITORY: repository.full_name,
+      GITHUB_REPOSITORY_ID: String(repository.id),
+      GITHUB_REF: "refs/heads/main",
+      GITHUB_WORKFLOW_REF:
+        "SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@refs/heads/main",
+      GITHUB_WORKFLOW_SHA: main,
+      GITHUB_SHA: main,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      EXPECTED_PR: "13",
+      EXPECTED_HEAD: head,
+      GH_TOKEN: "public-test-fixture",
+    },
+    pull: {
+      state: "open",
+      draft: false,
+      head: { sha: head, repo: { ...repository } },
+      base: { sha: main, ref: "main", repo: { ...repository } },
+    },
+    main: { sha: main },
+    httpOk: true,
+    requests: [],
+  };
+}
+
+async function runTartSourceGate(fixture) {
+  const source = readFileSync(tartWorkflowPath, "utf8");
+  const match = /<<'SOURCE_GATE'\n([\s\S]*?)\n[ \t]*SOURCE_GATE/.exec(source);
+  assert.ok(match, "trusted source gate must precede checkout");
+  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const gate = new AsyncFunction("process", "fetch", "AbortSignal", match[1]);
+  await gate(
+    { env: fixture.env },
+    async (url, options) => {
+      fixture.requests.push(url);
+      assert.match(url, /^https:\/\/api\.github\.com\/repos\/SAVAGExSTRATEGIC\/paseo\//);
+      assert.equal(options.headers.Authorization, "Bearer public-test-fixture");
+      assert.ok(options.signal);
+      return {
+        ok: fixture.httpOk,
+        json: async () => (url.endsWith("commits/main") ? fixture.main : fixture.pull),
+      };
+    },
+    AbortSignal,
+  );
+}
+
+test("Tart lane is manual, gated, scoped to its own Mac group, and checks source before checkout", () => {
+  const source = readFileSync(tartWorkflowPath, "utf8");
+  assert.match(source, /workflow_dispatch:/);
+  assert.doesNotMatch(source, /^ {2}(?:push|pull_request|merge_group):\s*$/m);
+  assert.match(source, /vars\.PASEO_PUBLIC_CI_COMMISSIONED == 'true'/);
+  assert.match(source, /group: Paseo Isolated CI/);
+  assert.match(source, /paseo-isolated-macos/);
+  assert.doesNotMatch(source, /ubuntu-latest|windows-latest|savage-local-actions/);
+  assert.match(source, /persist-credentials: false/);
+  assert.match(source, /ref: \$\{\{ inputs\.expected_head \}\}/);
+  assert.match(source, /contents: read/);
+  assert.match(source, /pull-requests: read/);
+  assert.ok(source.indexOf("SOURCE_GATE") < source.indexOf("uses: actions/checkout@"));
+});
+
+test("Tart source gate accepts the exact open same-repository PR and trusted current main", async () => {
+  const fixture = tartSourceFixture();
+  await runTartSourceGate(fixture);
+  assert.equal(fixture.requests.length, 2);
+});
+
+for (const [name, mutate] of [
+  ["foreign repository", (f) => (f.env.GITHUB_REPOSITORY = "foreign/paseo")],
+  ["recreated repository ID", (f) => (f.env.GITHUB_REPOSITORY_ID = "1")],
+  ["pull request workflow code", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
+  ["non-main ref", (f) => (f.env.GITHUB_REF = "refs/heads/feature")],
+  ["non-manual event", (f) => (f.env.GITHUB_EVENT_NAME = "pull_request")],
+  ["different workflow SHA", (f) => (f.env.GITHUB_WORKFLOW_SHA = "c".repeat(40))],
+  ["invalid PR input", (f) => (f.env.EXPECTED_PR = "13;echo invalid")],
+  ["branch instead of SHA", (f) => (f.env.EXPECTED_HEAD = "main")],
+  ["changed PR head", (f) => (f.pull.head.sha = "c".repeat(40))],
+  ["closed PR", (f) => (f.pull.state = "closed")],
+  ["draft PR", (f) => (f.pull.draft = true)],
+  ["external fork", (f) => (f.pull.head.repo.full_name = "foreign/paseo")],
+  ["foreign head repository ID", (f) => (f.pull.head.repo.id = 1)],
+  ["foreign base repository ID", (f) => (f.pull.base.repo.id = 1)],
+  ["different base branch", (f) => (f.pull.base.ref = "next")],
+  ["base movement", (f) => (f.pull.base.sha = "c".repeat(40))],
+  ["main movement", (f) => (f.main.sha = "c".repeat(40))],
+  ["unreadable GitHub source", (f) => (f.httpOk = false)],
+]) {
+  test(`Tart source gate refuses ${name}`, async () => {
+    const fixture = tartSourceFixture();
+    mutate(fixture);
+    await assert.rejects(runTartSourceGate(fixture));
+  });
+}
 
 const gatedCiJobs = new Map([
   ["format", { name: "format", contract: "format" }],

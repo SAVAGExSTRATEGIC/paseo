@@ -1,0 +1,93 @@
+# Commission only after host, network, credentials and runner identity are verified.
+# This adds a native macOS qualification lane; existing platform checks remain separate.
+name: Local Tart CI
+run-name: Tart macOS PR ${{ inputs.pull_request }} @ ${{ inputs.expected_head }}
+"on":
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Open, non-draft PR in this repository
+        required: true
+        type: string
+      expected_head:
+        description: Exact 40-character PR head SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: paseo-tart-${{ inputs.pull_request }}
+  cancel-in-progress: false
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+jobs:
+  server-tests-macos:
+    name: Tart macOS file observation
+    if:
+      ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' && github.event_name == 'workflow_dispatch' && github.ref
+      == 'refs/heads/main' }}
+    runs-on:
+      group: Paseo Isolated CI
+      labels:
+        - self-hosted
+        - macOS
+        - ARM64
+        - paseo-isolated-macos
+    steps:
+      - name: Verify trusted main and immutable source before checkout
+        shell: bash
+        env:
+          EXPECTED_PR: ${{ inputs.pull_request }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'SOURCE_GATE'
+          const repo = 'SAVAGExSTRATEGIC/paseo';
+          const repositoryId = 1382441324;
+          const workflow = `${repo}/.github/workflows/local-tart-ci.yml@refs/heads/main`;
+          const env = process.env;
+          if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
+              env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_WORKFLOW_REF !== workflow ||
+              env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_SHA !== env.GITHUB_SHA) {
+            throw new Error('Untrusted workflow origin');
+          }
+          if (!/^[1-9][0-9]*$/.test(env.EXPECTED_PR) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
+            throw new Error('Invalid source input');
+          }
+          const read = async path => {
+            const response = await fetch(`https://api.github.com/repos/${repo}/${path}`, {
+              headers: {Authorization: `Bearer ${env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28'},
+              signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) throw new Error('GitHub source read failed');
+            return response.json();
+          };
+          const [pull, main] = await Promise.all([read(`pulls/${env.EXPECTED_PR}`), read('commits/main')]);
+          if (pull.state !== 'open' || pull.draft || pull.head.sha !== env.EXPECTED_HEAD ||
+              pull.head.repo.full_name !== repo || pull.head.repo.id !== repositoryId ||
+              pull.base.repo.full_name !== repo || pull.base.repo.id !== repositoryId ||
+              pull.base.ref !== 'main' || pull.base.sha !== main.sha || main.sha !== env.GITHUB_SHA) {
+            throw new Error('Source changed or is outside admitted repository');
+          }
+          SOURCE_GATE
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: SAVAGExSTRATEGIC/paseo
+          ref: ${{ inputs.expected_head }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.20.0
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+      - name: Build server dependencies
+        run: npm run build:server-deps
+      - name: Run file observation tests
+        run: |
+          npm run test:unit --workspace=@getpaseo/server -- \
+            src/server/file-observer \
+            src/server/workspace-git-service.observation.test.ts \
+            src/server/workspace-git-service.observation.integration.test.ts \
+            --bail=1
+    timeout-minutes: 30
