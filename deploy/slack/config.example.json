@@ -24,7 +24,11 @@
       "url": "ws://127.0.0.1:6767/ws",
       "serverId": "srv_REPLACE",
       "passwordEnv": "PASEO_SLACK_DAEMON_PASSWORD",
-      "agentConfig": { "provider": "codex/MODEL_FROM_CATALOG", "modeId": "auto" }
+      "agentConfig": {
+        "provider": "codex/MODEL_FROM_CATALOG",
+        "modeId": "auto",
+        "options": { "approval_policy": "on-request", "sandbox_mode": "workspace-write" }
+      }
     }
   ]
 }

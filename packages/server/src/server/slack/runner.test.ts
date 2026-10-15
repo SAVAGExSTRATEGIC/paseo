@@ -108,6 +108,7 @@ async function fixture(modeId = "full-access", withDisconnect = false) {
   await host.connect();
   const store = await ConversationStore.open(directory, config.policy);
   return {
+    driver,
     store,
     host,
     config,
@@ -449,5 +450,47 @@ it("rejects attachment and dispatch outside the verified provider/model while re
   ).rejects.toThrow("session_provider_model");
   expect((await otherRoute.inspect(binding)).id).toBe(agent.id);
   await otherRoute.cancel(binding);
+  expect(turns).toEqual([]);
+});
+
+it("rejects a native permission-mode override before creation recovery, attachment, dispatch or response", async () => {
+  const { store, host, config, driver, turns } = await fixture("auto");
+  await store.accept({
+    id: "mode-check",
+    teamId: "T1",
+    userId: "U1",
+    channelId: "C1",
+    rootTs: "8.1",
+    messageTs: "8.1",
+    text: "must not bypass native permissions",
+    isDM: false,
+  });
+  const intake = store.pending()[0];
+  const target = config.policy.targets[0];
+  const agent = await host.create(intake, target);
+  expect(agent.current()?.currentModeId).toBe("auto");
+  if (!agent.workspaceId) throw new Error("Missing fixture workspace");
+  await store.bind({
+    key: intake.conversationKey,
+    ownerId: "U1",
+    target,
+    agentId: agent.id,
+    workspaceId: agent.workspaceId,
+  });
+  const binding = store.binding(intake.conversationKey);
+  if (!binding) throw new Error("Missing fixture binding");
+  await driver.setAgentMode(agent.id, "full-access");
+  await expect(host.create(intake, target)).rejects.toThrow("session_permission_mode");
+  await expect(host.attach({ target, agentId: agent.id })).rejects.toThrow(
+    "session_permission_mode",
+  );
+  await expect(host.send({ agent, intake, text: intake.text })).rejects.toThrow(
+    "session_permission_mode",
+  );
+  await expect(
+    host.respond(agent, { requestId: "mode-request", response: { behavior: "allow" } }),
+  ).rejects.toThrow("session_permission_mode");
+  expect((await host.inspect(binding)).id).toBe(agent.id);
+  await host.cancel(binding);
   expect(turns).toEqual([]);
 });

@@ -121,7 +121,7 @@ export class SlackDaemon {
         "The configured provider/model is unavailable; operator review required",
       );
     // Creation never starts work; the durable identity must be bound before dispatch.
-    return this.api.agents.create({
+    const agent = await this.api.agents.create({
       idempotencyKey: stableOperationId("create", intake.conversationKey),
       cwd: target.cwd,
       config: this.config.agentConfig,
@@ -129,8 +129,12 @@ export class SlackDaemon {
       labels: {
         slackOwner: intake.userId,
         slackConversation: stableOperationId("binding", intake.conversationKey),
+        slackNativePermissions: "paseo-slack-v1",
       },
     });
+    await agent.refresh();
+    this.requireEligibleRoute(agent);
+    return agent;
   }
 
   async inspect(binding: SlackBinding): Promise<PaseoAgentHandle> {
@@ -157,6 +161,11 @@ export class SlackDaemon {
     const snapshot = agent.current();
     if (!snapshot || `${snapshot.provider}/${snapshot.model}` !== this.config.agentConfig.provider)
       throw new SlackPolicyError("session_provider_model");
+    if (
+      this.config.agentConfig.modeId !== undefined &&
+      snapshot.currentModeId !== this.config.agentConfig.modeId
+    )
+      throw new SlackPolicyError("session_permission_mode");
   }
 
   async send(input: { agent: PaseoAgentHandle; intake: SlackIntake; text: string }): Promise<void> {

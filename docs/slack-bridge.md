@@ -10,6 +10,8 @@ Allow only the intended Slack workspace, users, channels, hosts and project root
 
 The daemon credential has broad authority. Bridge allowlists constrain this service's behavior; they do not create a daemon-scoped service identity. Native provider permission settings still apply. Verify the exact provider/account/model route's data controls and permitted usage before sending a task. Do not add a paid route or silently substitute another model.
 
+Check the native permission mode after creation. Shared provider options or launch plugins can override a requested mode. The Codex example explicitly selects `on-request` approval and `workspace-write`; verify those settings through a harmless paused request before accepting production. The bridge refuses a configured mode mismatch before creation recovery, attachment, dispatch or permission/question response. A global auto-approval plugin needs a reviewed exception for sessions labelled `slackNativePermissions=paseo-slack-v1`; otherwise it can resolve requests before Slack's owner decides. Keep the bridge stopped until that conflict is resolved.
+
 The manifest is [deploy/slack/manifest.json](../deploy/slack/manifest.json). Review these bot scopes:
 
 | Scope               | Purpose                                                          |
