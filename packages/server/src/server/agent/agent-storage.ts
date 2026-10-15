@@ -126,6 +126,12 @@ export class AgentStorage {
     return this.cache.get(agentId) ?? null;
   }
 
+  /** Whether one ID has more than one physical record, without choosing a copy. */
+  async hasDuplicateRecordPaths(agentId: string): Promise<boolean> {
+    await this.load();
+    return (this.pathsById.get(agentId)?.size ?? 0) > 1;
+  }
+
   async listByProviderSession(
     provider: string,
     providerHandleId: string,

@@ -51,6 +51,17 @@ mac:
   extraResources:
     - from: bin/paseo
       to: bin/paseo
+    - from: bin/paseo-browser-host
+      to: bin/paseo-browser-host
+    - from: ../chrome-extension
+      to: chrome-extension
+      filter:
+        - manifest.json
+        - service-worker.js
+        - browser-commands.js
+        - passport-key.js
+        - pair.html
+        - pair.js
     - from: assets/icon.png
       to: icon.png
   target:
