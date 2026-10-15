@@ -1,4 +1,6 @@
 import { expect, test, vi } from "vitest";
+import { validateBeforeResult, type PluginLifecycle } from "../plugins/lifecycle/index.js";
+import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11467,3 +11469,140 @@ test("usage session is a pure read of the live adapter and disappears on close",
   }
   expect(manager.usageSession(agent.id)).toBeNull();
 });
+
+test.each(["codex", "claude", "kimi", "grok"])(
+  "session-open MCP migration resumes %s with the same identity and persists only after success",
+  async (provider) => {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-mcp-migration-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const scoped = { type: "http" as const, url: "https://example.com/project-scoped" };
+    const fleet = { type: "stdio" as const, command: "fleet-test" };
+    let migrate = false;
+    const hookRequests: PluginSessionOpenRequest[] = [];
+    const lifecycle: PluginLifecycle = {
+      emit() {},
+      async before(name, request) {
+        if (name !== "agent.session_open") return request;
+        const opening = request as PluginSessionOpenRequest;
+        hookRequests.push(opening);
+        return validateBeforeResult(
+          name,
+          request,
+          migrate
+            ? {
+                ...opening,
+                mcpServers: { ...opening.mcpServers, fleet },
+                env: { REGION: "eu" },
+              }
+            : opening,
+        );
+      },
+    };
+    function migrationSession(config: AgentSessionConfig): AgentSession {
+      const session = new TestAgentSession(config);
+      Object.defineProperty(session, "provider", { value: provider });
+      Object.defineProperty(session, "capabilities", {
+        value: { ...TEST_CAPABILITIES, supportsMcpServers: true },
+      });
+      return session;
+    }
+    class MigrationClient extends TestAgentClient {
+      override async createSession(config: AgentSessionConfig) {
+        this.createdConfigs.push(config);
+        return migrationSession(config);
+      }
+      failResume = false;
+      readonly launchContexts: Array<AgentLaunchContext | undefined> = [];
+      override async resumeSession(
+        handle: AgentPersistenceHandle,
+        config?: Partial<AgentSessionConfig>,
+        context?: AgentLaunchContext,
+      ) {
+        if (this.failResume) throw new Error("migration provider unavailable");
+        this.launchContexts.push(context);
+        this.resumeOverrides.push(config);
+        return migrationSession({ provider, cwd: workdir, ...config });
+      }
+    }
+    const client = new MigrationClient(provider);
+    const manager = new AgentManager({
+      clients: { [provider]: client },
+      providerDefinitions: {
+        [provider]: {
+          enabled: true,
+          validateOptions: (options) => options,
+          applyOptions: (config) => config,
+        },
+      },
+      registry: storage,
+      logger,
+      pluginLifecycle: lifecycle,
+    });
+    try {
+      const created = await manager.createAgent(
+        {
+          provider,
+          cwd: workdir,
+          title: "Keep identity",
+          model: "saved-model",
+          providerOptions: { accountProfile: "saved-account" },
+          mcpServers: { scoped },
+          systemPrompt: "Original prompt",
+        },
+        undefined,
+        { workspaceId: "saved-workspace", labels: { custody: "retained" } },
+      );
+      await manager.flush();
+      const before = await storage.get(created.id);
+      migrate = true;
+      client.failResume = true;
+      await expect(manager.reloadAgentSession(created.id)).rejects.toThrow(
+        "migration provider unavailable",
+      );
+      const failed = await storage.get(created.id);
+      expect(failed?.config.mcpServers).toEqual({ scoped });
+      expect(failed?.persistence).toEqual(before?.persistence);
+      expect(failed?.lastStatus).toBe("closed");
+      client.failResume = false;
+      const resumed = await ensureAgentLoaded(created.id, {
+        agentManager: manager,
+        agentStorage: storage,
+        logger,
+      });
+      await manager.flush();
+      expect(resumed.id).toBe(created.id);
+      expect(resumed.config).toMatchObject({
+        provider,
+        cwd: workdir,
+        model: "saved-model",
+        providerOptions: { accountProfile: "saved-account" },
+        systemPrompt: "Original prompt",
+        mcpServers: { scoped, fleet },
+      });
+      expect(resumed.workspaceId).toBe("saved-workspace");
+      expect(resumed.labels).toEqual(created.labels);
+      expect(resumed.persistence).toEqual(created.persistence);
+      expect(client.resumeOverrides.at(-1)?.mcpServers).toEqual({ scoped, fleet });
+      expect(client.launchContexts.at(-1)?.env).toMatchObject({
+        REGION: "eu",
+        PASEO_AGENT_ID: created.id,
+        PASEO_AGENT_CWD: workdir,
+      });
+      const saved = await storage.get(created.id);
+      expect(saved?.config.mcpServers).toEqual({ scoped, fleet });
+      expect(saved?.config.providerOptions).toEqual(before?.config.providerOptions);
+      expect(saved?.persistence).toEqual(before?.persistence);
+      expect(saved?.createdAt).toEqual(before?.createdAt);
+      expect(hookRequests.map((request) => request.reason)).toEqual([
+        "create",
+        "refresh",
+        "resume",
+      ]);
+      await manager.closeAgent(created.id);
+    } finally {
+      await manager.flush();
+      await storage.flush();
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  },
+);

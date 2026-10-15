@@ -96,5 +96,79 @@ test("session-open hooks reject changes to session identity instead of silently 
       },
       paseo,
     ),
-  ).rejects.toThrow("agent.session_open hooks can only change env");
+  ).rejects.toThrow("agent.session_open hooks can only change env and mcpServers");
+});
+
+const sessionOpenRequest = {
+  agentId: "agent",
+  workspaceId: "workspace",
+  provider: "codex",
+  cwd: "/project",
+  reason: "resume" as const,
+  purpose: "interactive" as const,
+  env: {},
+  mcpServers: { scoped: { type: "http" as const, url: "https://example.com/scoped" } },
+};
+
+test("session-open hooks compose MCP additions while preserving scoped definitions", async () => {
+  const hooks = new PluginHookHandlers(() => {});
+  hooks.before("agent.session_open", ({ request }) => ({
+    ...request,
+    mcpServers: { ...request.mcpServers, fleet: { type: "stdio", command: "fleet" } },
+  }));
+  const output = await hooks.invoke(
+    "operation",
+    "before",
+    "agent.session_open",
+    sessionOpenRequest,
+    paseo,
+  );
+  expect(output.mcpServers).toEqual({
+    ...sessionOpenRequest.mcpServers,
+    fleet: { type: "stdio", command: "fleet" },
+  });
+  expect(sessionOpenRequest.mcpServers).toEqual({
+    scoped: { type: "http", url: "https://example.com/scoped" },
+  });
+});
+
+test("legacy session-open hooks that omit MCP definitions retain the existing map", async () => {
+  const hooks = new PluginHookHandlers(() => {});
+  hooks.before("agent.session_open", ({ request }) => {
+    const { mcpServers: _servers, ...legacy } = request;
+    return { ...legacy, env: { REGION: "eu" } };
+  });
+  const output = await hooks.invoke(
+    "operation",
+    "before",
+    "agent.session_open",
+    sessionOpenRequest,
+    paseo,
+  );
+  expect(output).toEqual({ ...sessionOpenRequest, env: { REGION: "eu" } });
+});
+
+test("history-only opens reject MCP migration", async () => {
+  const hooks = new PluginHookHandlers(() => {});
+  hooks.before("agent.session_open", ({ request }) => ({ ...request, mcpServers: {} }));
+  await expect(
+    hooks.invoke(
+      "operation",
+      "before",
+      "agent.session_open",
+      { ...sessionOpenRequest, purpose: "history" },
+      paseo,
+    ),
+  ).rejects.toThrow("history hooks cannot change mcpServers");
+});
+
+test("session-open hooks reject invalid MCP transports before opening a provider", async () => {
+  const hooks = new PluginHookHandlers(() => {});
+  hooks.before(
+    "agent.session_open",
+    ({ request }) => ({ ...request, mcpServers: { broken: { type: "http" } } }) as typeof request,
+  );
+  await expect(
+    hooks.invoke("operation", "before", "agent.session_open", sessionOpenRequest, paseo),
+  ).rejects.toThrow();
 });

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
@@ -163,6 +164,7 @@ async function assertUsableWorkingDirectory(cwd: string): Promise<void> {
 }
 
 interface PreparedSessionConfig {
+  env?: Record<string, string>;
   storedConfig: AgentSessionConfig;
   launchConfig: AgentSessionConfig;
   paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
@@ -1254,11 +1256,19 @@ export class AgentManager {
       options = { ...options, env: request.env };
     }
     await this.deleteAgentState(resolvedAgentId);
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      config,
-      resolvedAgentId,
-      { env: options?.env },
-    );
+    const {
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      env: launchEnv,
+    } = await this.prepareSessionConfig(config, resolvedAgentId, {
+      env: options?.env,
+      opening: {
+        reason: "create",
+        purpose: "interactive",
+        workspaceId: options.workspaceId ?? null,
+      },
+    });
     this.requireEnabledProvider(storedConfig.provider);
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
@@ -1269,8 +1279,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      options?.env,
-      { reason: "create", purpose: "interactive", workspaceId: options.workspaceId ?? null },
+      launchEnv,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -1369,11 +1378,15 @@ export class AgentManager {
       : resumeOptions;
     const purpose = currentResumeOptions?.purpose ?? "interactive";
 
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      mergedConfig,
-      resolvedAgentId,
-      { purpose },
-    );
+    const {
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      env: launchEnv,
+    } = await this.prepareSessionConfig(mergedConfig, resolvedAgentId, {
+      purpose,
+      opening: { reason: "resume", purpose, workspaceId: options?.workspaceId ?? null },
+    });
     const client = this.requireClient(handle.provider);
     const available = await client.isAvailable();
     if (!available) {
@@ -1387,12 +1400,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      undefined,
-      {
-        reason: "resume",
-        purpose,
-        workspaceId: options?.workspaceId ?? null,
-      },
+      launchEnv,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
@@ -1435,12 +1443,18 @@ export class AgentManager {
       throw new Error(`Provider '${input.provider}' does not support importing sessions`);
     }
 
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
+    const {
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      env: launchEnv,
+    } = await this.prepareSessionConfig(
       {
         provider: input.provider,
         cwd: input.cwd,
       },
       resolvedAgentId,
+      { opening: { reason: "import", purpose: "interactive", workspaceId: input.workspaceId } },
     );
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
     const launchContext = await this.buildLaunchContext(
@@ -1448,8 +1462,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      undefined,
-      { reason: "import", purpose: "interactive", workspaceId: input.workspaceId },
+      launchEnv,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const imported = await client.importSession(
@@ -1532,10 +1545,14 @@ export class AgentManager {
       ...overrides,
       provider,
     } as AgentSessionConfig;
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      refreshConfig,
-      agentId,
-    );
+    const {
+      storedConfig,
+      launchConfig,
+      paseoToolPolicy,
+      env: launchEnv,
+    } = await this.prepareSessionConfig(refreshConfig, agentId, {
+      opening: { reason: "refresh", purpose: "interactive", workspaceId: existing.workspaceId },
+    });
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
     const launchContext = await this.buildLaunchContext(
@@ -1543,8 +1560,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       paseoToolPolicy,
-      undefined,
-      { reason: "refresh", purpose: "interactive", workspaceId: existing.workspaceId },
+      launchEnv,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     if (
@@ -5159,12 +5175,42 @@ export class AgentManager {
   private async prepareSessionConfig(
     config: AgentSessionConfig,
     agentId: string,
-    options: { env?: Record<string, string>; purpose?: AgentResumePurpose } = {},
+    options: {
+      env?: Record<string, string>;
+      purpose?: AgentResumePurpose;
+      opening?: {
+        reason: PluginSessionOpenRequest["reason"];
+        purpose: PluginSessionOpenRequest["purpose"];
+        workspaceId?: string | null;
+      };
+    } = {},
   ): Promise<PreparedSessionConfig> {
-    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
+    let storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
       env: options.env,
       purpose: options.purpose,
     });
+    let env = options.env;
+    if (this.pluginLifecycle) {
+      const request: PluginSessionOpenRequest = {
+        agentId,
+        provider: storedConfig.provider,
+        cwd: storedConfig.cwd,
+        workspaceId: options.opening?.workspaceId ?? null,
+        reason: options.opening?.reason ?? "resume",
+        purpose: options.opening?.purpose ?? options.purpose ?? "interactive",
+        env: { ...env },
+        mcpServers: { ...storedConfig.mcpServers },
+      };
+      const transformed = await this.pluginLifecycle.before("agent.session_open", request);
+      env = transformed.env;
+      if (!isDeepStrictEqual(request.mcpServers, transformed.mcpServers ?? request.mcpServers)) {
+        storedConfig = stripInternalPaseoMcpServer({
+          ...storedConfig,
+          mcpServers: transformed.mcpServers,
+        });
+        this.validateToolPolicyServers(storedConfig);
+      }
+    }
     const paseoToolPolicy = this.paseoToolsEnabled
       ? this.resolvePaseoToolPolicy(storedConfig.provider)
       : { enabled: false };
@@ -5179,7 +5225,7 @@ export class AgentManager {
         mcpAuthToken: this.mcpAuthToken,
       }),
     );
-    return { storedConfig, launchConfig, paseoToolPolicy };
+    return { storedConfig, launchConfig, paseoToolPolicy, env };
   }
 
   private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
@@ -5201,25 +5247,7 @@ export class AgentManager {
     cwd: string,
     paseoToolPolicy: ProviderPaseoToolsPolicy | undefined,
     env?: Record<string, string>,
-    opening?: {
-      reason: PluginSessionOpenRequest["reason"];
-      purpose: PluginSessionOpenRequest["purpose"];
-      workspaceId?: string | null;
-    },
   ): Promise<AgentLaunchContext> {
-    if (this.pluginLifecycle) {
-      const request: PluginSessionOpenRequest = {
-        agentId,
-        provider: client.provider,
-        cwd,
-        workspaceId: opening?.workspaceId ?? null,
-        reason: opening?.reason ?? "resume",
-        purpose: opening?.purpose ?? "interactive",
-        env: { ...env },
-      };
-      const transformed = await this.pluginLifecycle.before("agent.session_open", request);
-      env = transformed.env;
-    }
     const context: AgentLaunchContext = {
       agentId,
       env: {

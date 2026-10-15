@@ -37,6 +37,8 @@ export interface PluginSessionOpenRequest {
   reason: "create" | "resume" | "refresh" | "import";
   purpose: "interactive" | "history";
   env: Record<string, string>;
+  /** Public MCP definitions; editable only for interactive opens. */
+  mcpServers?: AgentSessionConfig["mcpServers"];
 }
 
 export type PluginTurnOutcome =
