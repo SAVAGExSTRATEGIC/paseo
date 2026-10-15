@@ -7625,6 +7625,14 @@ export class Session {
           };
         }
       }
+      if (resident && this.agentManager.getAgent(resolved.agentId) !== resident) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "session_closed",
+          advertisedTools: [],
+        };
+      }
     }
     this.emit({
       type: "fetch_agent_response",
