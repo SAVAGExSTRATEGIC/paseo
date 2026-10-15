@@ -5293,6 +5293,57 @@ test("fetches paginated agent history separately from active agents", async () =
   });
 });
 
+test("aborts obsolete recent-session requests without sending cancellation to agents", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "import-abort",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen();
+  await connected;
+  const controller = new AbortController();
+  const request = client.fetchRecentProviderSessions({
+    providers: ["codex"],
+    signal: controller.signal,
+  });
+  const rejected = expect(request).rejects.toThrow("Request aborted");
+  controller.abort();
+  await rejected;
+  expect(mock.sent).toHaveLength(1);
+  const alreadyAborted = client.fetchRecentProviderSessions({ signal: controller.signal });
+  await expect(alreadyAborted).rejects.toThrow();
+  expect(mock.sent).toHaveLength(1);
+});
+
+test("removes an aborted listing from the connecting send queue", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "import-connecting-abort",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  const controller = new AbortController();
+  const request = client.fetchRecentProviderSessions({
+    providers: ["codex"],
+    signal: controller.signal,
+  });
+  const rejected = expect(request).rejects.toThrow("Request aborted");
+  controller.abort();
+  await rejected;
+  mock.triggerOpen();
+  await connected;
+  expect(mock.sent).toHaveLength(0);
+});
+
 test("fetches scoped recent provider sessions", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

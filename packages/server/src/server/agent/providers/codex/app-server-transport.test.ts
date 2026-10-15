@@ -60,6 +60,23 @@ describe("Codex app-server transport", () => {
     child.stdin.end();
   });
 
+  test("request deadlines preserve a stable timeout identity", async () => {
+    vi.useFakeTimers();
+    const child = createCodexAppServerChildProcess();
+    const client = new CodexAppServerClient(child, createTestLogger());
+    try {
+      const result = expect(client.request("thread/list", {}, 40_000)).rejects.toMatchObject({
+        name: "TimeoutError",
+        message: "Codex app-server request timed out for thread/list",
+      });
+      await vi.advanceTimersByTimeAsync(40_000);
+      await result;
+    } finally {
+      vi.useRealTimers();
+      await client.dispose();
+    }
+  });
+
   test("dispose rejects pending requests instead of leaving them hanging", async () => {
     const child = createCodexAppServerChildProcess();
     const client = new CodexAppServerClient(child, createTestLogger());

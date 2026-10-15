@@ -535,13 +535,16 @@ export interface AgentSlashCommand {
 }
 
 export interface ListImportableSessionsOptions {
+  /** Aborts temporary history listing work without affecting running agents. */
+  signal?: AbortSignal;
   providerOptions?: ProviderOptions;
   limit?: number;
   /** Optional case-insensitive descriptor search text. */
   query?: string;
   /**
    * Maximum number of cheap persisted-session candidates to inspect before
-   * applying the result limit. Providers must cap this at 500.
+   * applying the result limit for recent listings. Providers must cap this at 500.
+   * Query-aware providers may page a larger bounded window to find matches.
    */
   scanLimit?: number;
   /**

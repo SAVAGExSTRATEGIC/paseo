@@ -1,12 +1,16 @@
+import {
+  buildSessionsQueryKey,
+  buildSessionsQueriesConfig,
+  selectImportProviders,
+} from "./import-session-queries";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, type PressableStateCallbackType, Text, View } from "react-native";
-import { keepPreviousData, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import type {
   DaemonClient,
   FetchRecentProviderSessionEntry,
 } from "@getpaseo/client/internal/daemon-client";
-import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { ChevronDown, Inbox, Layers, RotateCw } from "lucide-react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -20,7 +24,6 @@ import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { useHostProjects } from "@/projects/host-projects";
 import { useHostFeature } from "@/runtime/host-features";
 import { useHosts } from "@/runtime/host-runtime";
-import { i18n } from "@/i18n/i18next";
 import {
   aggregateSessionEntries,
   ALL_FILTER_VALUE,
@@ -65,69 +68,6 @@ interface ImportSessionSheetProps {
   onImportedAgent?: (agentId: string) => void;
   /** The agent belongs to its own workspace; open that workspace and navigate. */
   onImported?: (agent: ImportedAgent) => void;
-}
-
-type RecentSessionsResponse = Awaited<
-  ReturnType<RecentProviderSessionsClient["fetchRecentProviderSessions"]>
->;
-
-type SessionsQueryKey = ReadonlyArray<string | number | null>;
-
-function buildSessionsQueryKey(input: {
-  cwd: string | null;
-  query: string;
-  limit: number;
-  provider?: string;
-}): SessionsQueryKey {
-  return [
-    "recent-provider-sessions",
-    input.cwd,
-    input.query,
-    input.limit,
-    ...(input.provider === undefined ? [] : [input.provider]),
-  ];
-}
-
-interface SessionsQueryConfig {
-  queryKey: SessionsQueryKey;
-  enabled: boolean;
-  // A provider that cannot answer stays broken until the user asks again. React
-  // Query's default retry would keep the header spinner turning and pile up
-  // in-flight daemon requests behind a dead provider (#2512).
-  retry: false;
-  placeholderData: typeof keepPreviousData;
-  queryFn: () => Promise<RecentSessionsResponse>;
-}
-
-function buildSessionsQueriesConfig(args: {
-  providersToFetch: AgentProvider[] | null;
-  visible: boolean;
-  client: RecentProviderSessionsClient | null;
-  cwd: string | null;
-  query: string;
-  limit: number;
-  hostDisconnectedMessage?: string;
-}): SessionsQueryConfig[] {
-  const { providersToFetch, visible, client, cwd, query, limit, hostDisconnectedMessage } = args;
-  if (providersToFetch === null) return [];
-  const enabled = visible && Boolean(client);
-  return providersToFetch.map((provider) => ({
-    queryKey: buildSessionsQueryKey({ cwd, query, limit, provider }),
-    enabled,
-    retry: false as const,
-    placeholderData: keepPreviousData,
-    queryFn: async () => {
-      if (!client) {
-        throw new Error(hostDisconnectedMessage ?? i18n.t("workspace.terminal.hostDisconnected"));
-      }
-      return await client.fetchRecentProviderSessions({
-        ...(cwd ? { cwd } : {}),
-        providers: [provider],
-        limit,
-        ...(query ? { query } : {}),
-      });
-    },
-  }));
 }
 
 interface SheetStatusMessagesProps {
@@ -202,6 +142,7 @@ function ProviderErrorBannerRow({
     <View style={styles.errorRow}>
       <Text style={styles.errorText}>
         {t("importSession.status.failedProvider", { provider: row.label })}
+        {row.guidance ? `\n${row.guidance}` : null}
       </Text>
       <Button
         variant="ghost"
@@ -452,9 +393,14 @@ export function ImportSessionSheet({
     supportsWorkspaceTarget,
   });
 
-  const providersToFetch = useMemo(
+  const availableProviders = useMemo(
     () => (requiresHostUpgrade ? null : resolveProvidersToFetch(supportsSnapshot, snapshotEntries)),
     [requiresHostUpgrade, supportsSnapshot, snapshotEntries],
+  );
+
+  const providersToFetch = useMemo(
+    () => selectImportProviders(availableProviders, selectedProvider),
+    [availableProviders, selectedProvider],
   );
 
   const providerLabelById = useMemo(
@@ -462,12 +408,16 @@ export function ImportSessionSheet({
     [snapshotEntries],
   );
 
-  const sessionsQueryRoot = useMemo(() => ["recent-provider-sessions", scopeCwd], [scopeCwd]);
+  const sessionsQueryRoot = useMemo(
+    () => ["recent-provider-sessions", serverId, scopeCwd],
+    [serverId, scopeCwd],
+  );
 
   const queriesConfig = useMemo(
     () =>
       buildSessionsQueriesConfig({
         providersToFetch,
+        serverId,
         visible,
         client,
         cwd: scopeCwd,
@@ -475,7 +425,7 @@ export function ImportSessionSheet({
         limit: pageLimit,
         hostDisconnectedMessage: t("workspace.terminal.hostDisconnected"),
       }),
-    [providersToFetch, visible, client, scopeCwd, query, pageLimit, t],
+    [providersToFetch, serverId, visible, client, scopeCwd, query, pageLimit, t],
   );
 
   const queries = useQueries({ queries: queriesConfig });
@@ -486,7 +436,10 @@ export function ImportSessionSheet({
     [queries],
   );
 
-  const filterProviders = useMemo(() => [...(providersToFetch ?? [])].sort(), [providersToFetch]);
+  const filterProviders = useMemo(
+    () => [...(availableProviders ?? [])].sort(),
+    [availableProviders],
+  );
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterAnchorRef = useRef<View>(null);
 
@@ -657,10 +610,16 @@ export function ImportSessionSheet({
   const handleRetryProvider = useCallback(
     (provider: string) => {
       void queryClient.refetchQueries({
-        queryKey: buildSessionsQueryKey({ cwd: scopeCwd, query, limit: pageLimit, provider }),
+        queryKey: buildSessionsQueryKey({
+          serverId,
+          cwd: scopeCwd,
+          query,
+          limit: pageLimit,
+          provider,
+        }),
       });
     },
-    [pageLimit, query, queryClient, scopeCwd],
+    [pageLimit, query, queryClient, serverId, scopeCwd],
   );
 
   const handleShowAll = useCallback(() => setIsShowingAllDirectories(true), []);

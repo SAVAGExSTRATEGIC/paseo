@@ -4206,6 +4206,8 @@ export const FetchRecentProviderSessionsResponseMessageSchema = z.object({
         z.object({
           provider: z.string(),
           message: z.string(),
+          // Optional so older daemon responses remain readable.
+          kind: z.enum(["timeout", "scan_limit", "pagination_stalled"]).optional(),
         }),
       )
       .optional(),

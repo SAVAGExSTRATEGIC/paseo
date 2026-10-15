@@ -266,7 +266,9 @@ export class CodexAppServerClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Codex app-server request timed out for ${method}`));
+        reject(
+          new DOMException(`Codex app-server request timed out for ${method}`, "TimeoutError"),
+        );
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
     });

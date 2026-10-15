@@ -795,6 +795,7 @@ export type FetchRecentProviderSessionsOptions = Omit<
   "type" | "requestId"
 > & {
   requestId?: string;
+  signal?: AbortSignal;
 };
 export type FetchRecentProviderSessionEntry = FetchRecentProviderSessionsPayload["entries"][number];
 type FetchWorkspacesPayload = Extract<
@@ -1845,11 +1846,14 @@ export class DaemonClient {
    * is queued and will be sent once connected (or rejected after timeout).
    * This prevents waiters from hanging forever when called during connection.
    */
-  private sendSessionMessageOrThrow(message: SessionInboundMessage): Promise<void> {
+  private sendSessionMessageOrThrow(
+    message: SessionInboundMessage,
+    signal?: AbortSignal,
+  ): Promise<void> {
     return this.sendWhenConnected(() => {
       const payload = SessionInboundMessageSchema.parse(message);
       this.sendJsonMessage("session", payload.type, { type: "session", message: payload });
-    });
+    }, signal);
   }
 
   /** Resolves once connected, waiting out a connection that is still being established. */
@@ -1857,7 +1861,8 @@ export class DaemonClient {
     return this.sendWhenConnected(() => undefined);
   }
 
-  private sendWhenConnected(send: () => void): Promise<void> {
+  private sendWhenConnected(send: () => void, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const status = this.connectionState.status;
 
     // If connected, send immediately
@@ -1869,21 +1874,40 @@ export class DaemonClient {
     // If connecting, queue the message to be sent once connected
     if (status === "connecting") {
       return new Promise((resolve, reject) => {
-        const timeoutHandle = setTimeout(() => {
-          // Remove from queue
-          const idx = this.pendingSendQueue.findIndex((p) => p.resolve === resolve);
-          if (idx !== -1) {
-            this.pendingSendQueue.splice(idx, 1);
-          }
-          reject(
-            new DaemonConnectionError(
-              "Timed out waiting for connection to send message",
-              "DAEMON_REQUEST_TIMEOUT",
-            ),
-          );
-        }, DEFAULT_SEND_QUEUE_TIMEOUT_MS);
-
-        this.pendingSendQueue.push({ send, resolve, reject, timeoutHandle });
+        const cleanup = () => {
+          clearTimeout(pending.timeoutHandle);
+          signal?.removeEventListener("abort", onAbort);
+        };
+        const fail = (error: Error) => {
+          const index = this.pendingSendQueue.indexOf(pending);
+          if (index !== -1) this.pendingSendQueue.splice(index, 1);
+          pending.reject(error);
+        };
+        const onAbort = () => fail(new Error("Request aborted", { cause: signal?.reason }));
+        const pending: PendingSend = {
+          send,
+          resolve: () => {
+            cleanup();
+            resolve();
+          },
+          reject: (error) => {
+            cleanup();
+            reject(error);
+          },
+          timeoutHandle: setTimeout(
+            () =>
+              fail(
+                new DaemonConnectionError(
+                  "Timed out waiting for connection to send message",
+                  "DAEMON_REQUEST_TIMEOUT",
+                ),
+              ),
+            DEFAULT_SEND_QUEUE_TIMEOUT_MS,
+          ),
+        };
+        this.pendingSendQueue.push(pending);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
       });
     }
 
@@ -1930,9 +1954,11 @@ export class DaemonClient {
     requestId: string;
     message: SessionInboundMessage;
     timeout?: number;
+    signal?: AbortSignal;
     select: (msg: SessionOutboundMessage) => T | null;
     options?: { skipQueue?: boolean };
   }): Promise<T> {
+    params.signal?.throwIfAborted();
     const wire = this.owned.prepareRequest(params.message);
     const timeout = params.timeout ?? DEFAULT_SESSION_RPC_TIMEOUT_MS;
     const { promise, cancel } = this.waitForWithCancel<RpcWaitResult<T>>(
@@ -1958,20 +1984,26 @@ export class DaemonClient {
       { ...params.options, requestId: params.requestId },
     );
 
+    // The send may wait for a connection; observe rejection immediately.
+    void promise.catch(() => undefined);
+    const onAbort = () => cancel(new Error("Request aborted", { cause: params.signal?.reason }));
+    params.signal?.addEventListener("abort", onAbort, { once: true });
+    if (params.signal?.aborted) onAbort();
     try {
-      await this.sendSessionMessageOrThrow(wire.message);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      cancel(err);
-      void promise.catch(() => undefined);
-      throw err;
-    }
+      try {
+        await this.sendSessionMessageOrThrow(wire.message, params.signal);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        cancel(err);
+        void promise.catch(() => undefined);
+        throw err;
+      }
 
-    try {
       const result = await promise;
       if (result.kind === "error") throw result.error;
       return result.value;
     } finally {
+      params.signal?.removeEventListener("abort", onAbort);
       await wire.finish();
     }
   }
@@ -2482,6 +2514,7 @@ export class DaemonClient {
     return this.sendRequest({
       requestId: resolvedRequestId,
       message,
+      signal: options?.signal,
       options: { skipQueue: true },
       select: (msg) => {
         if (msg.type !== "fetch_recent_provider_sessions_response") {
