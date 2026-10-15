@@ -1,13 +1,14 @@
 import type { Command } from "commander";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import type { AgentMcpInspectionPayload, AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { connectToDaemon } from "../../utils/client.js";
 import type { CommandOptions, ListResult, OutputSchema, CommandError } from "../../output/index.js";
 
 export function addInspectOptions(cmd: Command): Command {
   return cmd
     .description("Show detailed information about an agent")
-    .argument("<id>", "Agent ID (or prefix)");
+    .argument("<id>", "Agent ID (or prefix)")
+    .option("--mcp-server <name>", "Inspect one MCP server in the resident provider session");
 }
 
 /** Agent inspect data for display (matches CLI spec format) */
@@ -46,6 +47,7 @@ interface AgentInspect {
   }>;
   Worktree: string | null;
   ParentAgentId: string | null;
+  McpInspection?: AgentMcpInspectionPayload;
 }
 
 /** Key-value row for table display */
@@ -202,6 +204,8 @@ function toInspectRows(agent: AgentInspect): InspectRow[] {
 
   rows.push({ key: "Worktree", value: agent.Worktree ?? "null" });
   rows.push({ key: "ParentAgentId", value: agent.ParentAgentId ?? "null" });
+  if (agent.McpInspection)
+    rows.push({ key: "McpInspection", value: JSON.stringify(agent.McpInspection) });
 
   return rows;
 }
@@ -210,6 +214,7 @@ export type AgentInspectResult = ListResult<InspectRow>;
 
 export interface AgentInspectOptions extends CommandOptions {
   host?: string;
+  mcpServer?: string;
 }
 
 export async function runInspectCommand(
@@ -230,7 +235,10 @@ export async function runInspectCommand(
   const client = await connectToDaemon({ target: options.daemonTarget });
 
   try {
-    const fetchResult = await client.fetchAgent({ agentId: agentIdArg });
+    const fetchResult = await client.fetchAgent({
+      agentId: agentIdArg,
+      ...(options.mcpServer ? { mcpServer: options.mcpServer } : {}),
+    });
     if (!fetchResult) {
       const error: CommandError = {
         code: "AGENT_NOT_FOUND",
@@ -240,9 +248,20 @@ export async function runInspectCommand(
       throw error;
     }
 
+    if (options.mcpServer && !fetchResult.mcpInspection) {
+      const error: CommandError = {
+        code: "MCP_INSPECTION_UNAVAILABLE",
+        message: "The connected daemon did not return a live MCP inspection",
+      };
+      throw error;
+    }
+
     await client.close();
 
-    const inspectData = toInspectData(fetchResult.agent);
+    const inspectData: AgentInspect = {
+      ...toInspectData(fetchResult.agent),
+      ...(fetchResult.mcpInspection ? { McpInspection: fetchResult.mcpInspection } : {}),
+    };
 
     return {
       type: "list",

@@ -670,7 +670,9 @@ export type AgentMcpServerInspection =
         | "provider_disconnected"
         | "timeout"
         | "provider_request_failed"
-        | "invalid_provider_response";
+        | "invalid_provider_response"
+        | "session_closed"
+        | "unsupported_provider";
       advertisedTools: [];
     }
   | { status: "not_advertised"; server: string; advertisedTools: [] }

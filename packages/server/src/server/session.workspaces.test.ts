@@ -3503,6 +3503,91 @@ test("fetch_agent_request still resolves archived historical agents", async () =
   ]);
 });
 
+test("fetch_agent_request reads one resident MCP status without loading a closed session", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "current-agent", cwd: "/tmp/current-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  session.agentManager.getAgent = () => ({
+    session: {
+      inspectMcpServer: async (server: string) => ({
+        status: "observed",
+        server,
+        connection: "connected",
+        auth: "unknown",
+        advertisedTools: ["search"],
+        toolCatalog: "listed",
+      }),
+    },
+  });
+
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-mcp-detail",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-mcp-detail",
+        agent,
+        project: null,
+        error: null,
+        mcpInspection: {
+          status: "observed",
+          server: "router",
+          connection: "connected",
+          auth: "unknown",
+          advertisedTools: ["search"],
+          toolCatalog: "listed",
+        },
+      },
+    },
+  ]);
+});
+
+test("fetch_agent_request reports a closed provider session without reopening it", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "closed-agent", cwd: "/tmp/closed-agent", status: "closed" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  session.agentManager.getAgent = () => null;
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-closed-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-closed-mcp",
+        agent,
+        project: null,
+        error: null,
+        mcpInspection: {
+          status: "unavailable",
+          server: "router",
+          reason: "session_closed",
+          advertisedTools: [],
+        },
+      },
+    },
+  ]);
+});
+
 test("git branch workspace uses branch as canonical name", async () => {
   const session = createSessionForWorkspaceTests();
   session.workspaceRegistry.list = async () => [

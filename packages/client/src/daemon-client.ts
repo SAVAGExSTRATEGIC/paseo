@@ -654,6 +654,7 @@ export interface FetchAgentOptions {
   agentId: string;
   requestId?: string;
   timeout?: number;
+  mcpServer?: string;
 }
 type LegacyFetchAgentOptions = Omit<FetchAgentOptions, "agentId">;
 export interface FetchAgentTimelineOptions {
@@ -913,6 +914,10 @@ type WorkspaceSetupStatusPayload = WorkspaceSetupStatusResponseMessage["payload"
 export interface FetchAgentResult {
   agent: AgentSnapshotPayload;
   project: ProjectPlacementPayload | null;
+  mcpInspection?: Extract<
+    SessionOutboundMessage,
+    { type: "fetch_agent_response" }
+  >["payload"]["mcpInspection"];
 }
 
 export interface WaitForFinishResult {
@@ -2766,6 +2771,7 @@ export class DaemonClient {
       type: "fetch_agent_request",
       requestId: resolvedRequestId,
       agentId: options.agentId,
+      ...(options.mcpServer ? { mcpServer: options.mcpServer } : {}),
     });
     const payload = await this.sendRequest({
       requestId: resolvedRequestId,
@@ -2788,7 +2794,11 @@ export class DaemonClient {
     if (!payload.agent) {
       return null;
     }
-    return { agent: payload.agent, project: payload.project ?? null };
+    return {
+      agent: payload.agent,
+      project: payload.project ?? null,
+      ...(payload.mcpInspection ? { mcpInspection: payload.mcpInspection } : {}),
+    };
   }
 
   // ============================================================================

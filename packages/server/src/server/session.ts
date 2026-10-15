@@ -130,6 +130,7 @@ import {
   type AgentPermissionResponse,
   type AgentRunOptions,
   type AgentSessionConfig,
+  type AgentMcpServerInspection,
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
@@ -2718,7 +2719,7 @@ export class Session {
       case "fetch_recent_provider_sessions_request":
         return this.handleFetchRecentProviderSessions(msg);
       case "fetch_agent_request":
-        return this.handleFetchAgent(msg.agentId, msg.requestId);
+        return this.handleFetchAgent(msg.agentId, msg.requestId, msg.mcpServer);
       case "delete_agent_request":
         return this.handleDeleteAgentRequest(msg.agentId, msg.requestId);
       case "archive_agent_request":
@@ -7564,7 +7565,11 @@ export class Session {
     }
   }
 
-  private async handleFetchAgent(agentIdOrIdentifier: string, requestId: string): Promise<void> {
+  private async handleFetchAgent(
+    agentIdOrIdentifier: string,
+    requestId: string,
+    mcpServer?: string,
+  ): Promise<void> {
     const resolved = await this.resolveAgentIdentifier(agentIdOrIdentifier);
     if (!resolved.ok) {
       this.emit({
@@ -7591,9 +7596,45 @@ export class Session {
     const project = agent.workspaceId
       ? await this.buildProjectPlacementForWorkspaceId(agent.workspaceId)
       : null;
+    let mcpInspection: AgentMcpServerInspection | undefined;
+    if (mcpServer) {
+      const resident = this.agentManager.getAgent(resolved.agentId);
+      if (!resident?.session) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "session_closed",
+          advertisedTools: [],
+        };
+      } else if (!resident.session.inspectMcpServer) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "unsupported_provider",
+          advertisedTools: [],
+        };
+      } else {
+        try {
+          mcpInspection = await resident.session.inspectMcpServer(mcpServer);
+        } catch {
+          mcpInspection = {
+            status: "unavailable",
+            server: mcpServer,
+            reason: "provider_request_failed",
+            advertisedTools: [],
+          };
+        }
+      }
+    }
     this.emit({
       type: "fetch_agent_response",
-      payload: { requestId, agent, project, error: null },
+      payload: {
+        requestId,
+        agent,
+        project,
+        error: null,
+        ...(mcpInspection ? { mcpInspection } : {}),
+      },
     });
   }
 

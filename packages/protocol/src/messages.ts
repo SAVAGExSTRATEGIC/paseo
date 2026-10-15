@@ -1344,6 +1344,8 @@ export const FetchAgentRequestMessageSchema = z.object({
   requestId: z.string(),
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
   agentId: z.string(),
+  /** Optional live inspection of exactly one configured MCP server. */
+  mcpServer: z.string().trim().min(1).max(200).optional(),
 });
 
 export const SendAgentMessageRequestSchema = z.object({
@@ -4585,6 +4587,42 @@ export const ArchiveWorkspaceResponseMessageSchema = z.object({
   }),
 });
 
+export const AgentMcpInspectionPayloadSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("not_configured"),
+    server: z.string(),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("not_advertised"),
+    server: z.string(),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    server: z.string(),
+    reason: z.enum([
+      "no_active_thread",
+      "provider_disconnected",
+      "timeout",
+      "provider_request_failed",
+      "invalid_provider_response",
+      "session_closed",
+      "unsupported_provider",
+    ]),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("observed"),
+    server: z.string(),
+    connection: z.string(),
+    auth: z.string(),
+    advertisedTools: z.array(z.string()),
+    toolCatalog: z.enum(["listed", "failed", "not_exposed_by_provider_api"]),
+  }),
+]);
+export type AgentMcpInspectionPayload = z.infer<typeof AgentMcpInspectionPayloadSchema>;
+
 export const FetchAgentResponseMessageSchema = z.object({
   type: z.literal("fetch_agent_response"),
   payload: z.object({
@@ -4592,6 +4630,7 @@ export const FetchAgentResponseMessageSchema = z.object({
     agent: AgentSnapshotPayloadSchema.nullable(),
     project: ProjectPlacementPayloadSchema.nullable().optional(),
     error: z.string().nullable(),
+    mcpInspection: AgentMcpInspectionPayloadSchema.optional(),
   }),
 });
 
