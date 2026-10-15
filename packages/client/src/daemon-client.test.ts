@@ -1533,6 +1533,87 @@ test("honors explicit fetchAgent timeout below the session RPC default", async (
   await expect(responsePromise).rejects.toThrow("Timeout waiting for message (5000ms)");
 });
 
+test("fetchAgent requests one MCP server only when explicitly selected", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  mock.triggerOpen();
+  await connecting;
+
+  const response = client.fetchAgent({
+    agentId: "agent-1",
+    requestId: "req-agent-mcp",
+    mcpServer: "router",
+  });
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "fetch_agent_request",
+    requestId: "req-agent-mcp",
+    agentId: "agent-1",
+    mcpServer: "router",
+  });
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-agent-mcp",
+        agent: {
+          id: "agent-1",
+          provider: "codex",
+          cwd: "/tmp/project",
+          model: null,
+          createdAt: "2026-10-15T00:00:00Z",
+          updatedAt: "2026-10-15T00:00:00Z",
+          lastUserMessageAt: null,
+          status: "idle",
+          capabilities: {
+            supportsStreaming: true,
+            supportsSessionPersistence: true,
+            supportsDynamicModes: false,
+            supportsMcpServers: true,
+            supportsReasoningStream: false,
+            supportsToolInvocations: true,
+            supportsRewindConversation: false,
+            supportsRewindFiles: false,
+            supportsRewindBoth: false,
+          },
+          currentModeId: null,
+          availableModes: [],
+          pendingPermissions: [],
+          persistence: null,
+          title: null,
+          labels: {},
+        },
+        project: null,
+        error: null,
+        mcpInspection: {
+          status: "observed",
+          server: "router",
+          connection: "connected",
+          auth: "unknown",
+          advertisedTools: ["search"],
+          toolCatalog: "listed",
+        },
+      },
+    }),
+  );
+  await expect(response).resolves.toMatchObject({
+    agent: { id: "agent-1" },
+    mcpInspection: {
+      status: "observed",
+      server: "router",
+      advertisedTools: ["search"],
+    },
+  });
+});
+
 test("preserves legacy fetchAgent id overload", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

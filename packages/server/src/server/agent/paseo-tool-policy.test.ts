@@ -32,4 +32,18 @@ describe("Paseo tool policy", () => {
       isPaseoToolEnabled({ enabled: true, disabledTools: ["list_agents"] }, "create_agent"),
     ).toBe(true);
   });
+
+  test("allows an explicit browser-only provider without opening other Paseo tools", () => {
+    const policy = { enabled: false, browserToolsEnabled: true };
+    expect(isPaseoToolEnabled(policy, "browser_list_tabs")).toBe(true);
+    expect(isPaseoToolEnabled(policy, "browser_new_tab")).toBe(true);
+    expect(isPaseoToolEnabled(policy, "create_agent")).toBe(false);
+    expect(isPaseoToolEnabled(policy, "list_agents")).toBe(false);
+    expect(
+      isPaseoToolEnabled({ ...policy, disabledTools: ["browser_new_tab"] }, "browser_new_tab"),
+    ).toBe(false);
+    expect(
+      isPaseoToolEnabled({ enabled: false, browserToolsEnabled: false }, "browser_list_tabs"),
+    ).toBe(false);
+  });
 });

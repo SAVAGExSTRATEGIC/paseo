@@ -152,7 +152,8 @@ import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-sto
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js";
 import { resolvePaseoToolPolicy } from "./agent/paseo-tool-policy.js";
-import { BrowserToolsBroker } from "./browser-tools/broker.js";
+import { createBrowserToolsBrokerAtStartup } from "./browser-tools/passport/binding.js";
+import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
@@ -608,7 +609,12 @@ export async function createPaseoDaemon(
     logger.error({ err: error }, "Failed to maintain orchestration skills at startup");
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
-  const browserToolsBroker = new BrowserToolsBroker({});
+  const browserToolsBroker = createBrowserToolsBrokerAtStartup({
+    paseoHome: config.paseoHome,
+    env: config.configReload?.env,
+    onAwaitingPairing: () =>
+      logger.warn("Browser passport is required but not paired; browser hosts are denied"),
+  });
   const pluginRuntime = new PluginService(logger, daemonConfigStore, daemonVersion, {
     managedSources: new ManagedPluginSources(config.paseoHome),
     settingsDirectory: path.join(config.paseoHome, "plugin-settings"),

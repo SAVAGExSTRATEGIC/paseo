@@ -62,6 +62,11 @@
       "types": "./dist/server/server/agent/agent-response-loop.d.ts",
       "source": "./src/server/agent/agent-response-loop.ts",
       "default": "./dist/server/server/agent/agent-response-loop.js"
+    },
+    "./browser-passport": {
+      "types": "./dist/server/server/browser-tools/passport/binding.d.ts",
+      "source": "./src/server/browser-tools/passport/binding.ts",
+      "default": "./dist/server/server/browser-tools/passport/binding.js"
     }
   },
   "publishConfig": {

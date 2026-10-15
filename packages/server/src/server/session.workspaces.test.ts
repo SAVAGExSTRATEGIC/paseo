@@ -117,6 +117,7 @@ interface SessionTestAccess {
   agentStorage: {
     list(...args: unknown[]): Promise<unknown[]>;
     get(agentId: string): Promise<unknown>;
+    hasDuplicateRecordPaths(agentId: string): Promise<boolean>;
     upsert(record: unknown): Promise<void>;
   };
   agentManager: {
@@ -683,6 +684,7 @@ function createSessionForWorkspaceTests(
               })
             : null,
         upsert: async () => {},
+        hasDuplicateRecordPaths: async () => false,
         ...options.agentStorage,
       }),
       projectRegistry: options.projectRegistry ?? {
@@ -3501,6 +3503,235 @@ test("fetch_agent_request still resolves archived historical agents", async () =
       },
     },
   ]);
+});
+
+test("fetch_agent_request reads one resident MCP status without loading a closed session", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "current-agent", cwd: "/tmp/current-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  const resident = {
+    session: {
+      inspectMcpServer: async (server: string) => ({
+        status: "observed",
+        server,
+        connection: "connected",
+        auth: "unknown",
+        advertisedTools: ["search"],
+        toolCatalog: "listed",
+      }),
+    },
+  };
+  session.agentManager.getAgent = () => resident;
+
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-mcp-detail",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-mcp-detail",
+        agent,
+        project: null,
+        error: null,
+        mcpInspection: {
+          status: "observed",
+          server: "router",
+          connection: "connected",
+          auth: "unknown",
+          advertisedTools: ["search"],
+          toolCatalog: "listed",
+        },
+      },
+    },
+  ]);
+});
+
+test("fetch_agent_request rejects MCP inspection for a duplicate saved agent ID", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "duplicate-agent", cwd: "/tmp/duplicate-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.agentStorage.hasDuplicateRecordPaths = async () => true;
+  const getAgentPayloadById = vi.fn().mockResolvedValue(agent);
+  session.getAgentPayloadById = getAgentPayloadById;
+
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-duplicate-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+
+  expect(getAgentPayloadById).not.toHaveBeenCalled();
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-duplicate-mcp",
+        agent: null,
+        project: null,
+        error:
+          "Agent ID has multiple saved records; MCP inspection requires an unambiguous session",
+      },
+    },
+  ]);
+});
+
+test("fetch_agent_request reports a closed provider session without reopening it", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "closed-agent", cwd: "/tmp/closed-agent", status: "closed" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  session.agentManager.getAgent = () => null;
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-closed-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-closed-mcp",
+        agent,
+        project: null,
+        error: null,
+        mcpInspection: {
+          status: "unavailable",
+          server: "router",
+          reason: "session_closed",
+          advertisedTools: [],
+        },
+      },
+    },
+  ]);
+});
+
+test("fetch_agent_request discards MCP status after its resident session closes", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "closing-agent", cwd: "/tmp/closing-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  let release!: (value: unknown) => void;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const resident = {
+    session: {
+      inspectMcpServer: () => {
+        markStarted();
+        return pending;
+      },
+    },
+  };
+  let current: unknown = resident;
+  session.agentManager.getAgent = () => current;
+
+  const inspection = session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-closing-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+  await started;
+  current = null;
+  release({
+    status: "observed",
+    server: "router",
+    connection: "connected",
+    auth: "unknown",
+    advertisedTools: ["search"],
+    toolCatalog: "listed",
+  });
+  await inspection;
+  expect(emitted[0]?.type).toBe("fetch_agent_response");
+  if (emitted[0]?.type === "fetch_agent_response")
+    expect(emitted[0].payload.mcpInspection).toEqual({
+      status: "unavailable",
+      server: "router",
+      reason: "session_closed",
+      advertisedTools: [],
+    });
+});
+
+test("fetch_agent_request discards MCP status after the resident provider session changes", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "restarting-agent", cwd: "/tmp/restarting-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.getAgentPayloadById = async () => agent;
+  let release!: (value: unknown) => void;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const resident = {
+    session: {
+      inspectMcpServer: () => {
+        markStarted();
+        return pending;
+      },
+    },
+  };
+  session.agentManager.getAgent = () => resident;
+
+  const inspection = session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-restarting-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+  await started;
+  resident.session = { inspectMcpServer: async () => ({ status: "not_advertised" }) };
+  release({
+    status: "observed",
+    server: "router",
+    connection: "connected",
+    auth: "unknown",
+    advertisedTools: ["search"],
+    toolCatalog: "listed",
+  });
+  await inspection;
+  expect(emitted[0]?.type).toBe("fetch_agent_response");
+  if (emitted[0]?.type === "fetch_agent_response")
+    expect(emitted[0].payload.mcpInspection).toEqual({
+      status: "unavailable",
+      server: "router",
+      reason: "session_closed",
+      advertisedTools: [],
+    });
 });
 
 test("git branch workspace uses branch as canonical name", async () => {

@@ -1344,6 +1344,8 @@ export const FetchAgentRequestMessageSchema = z.object({
   requestId: z.string(),
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
   agentId: z.string(),
+  /** Optional live inspection of exactly one configured MCP server. */
+  mcpServer: z.string().trim().min(1).max(200).optional(),
 });
 
 export const SendAgentMessageRequestSchema = z.object({
@@ -3170,11 +3172,34 @@ export const SessionEventsSetSubscriptionResponseSchema = z.object({
   payload: z.object({ requestId: z.string(), subscriptionId: z.string().optional() }),
 });
 
+export const BrowserHostChallengeRequestSchema = z.object({
+  type: z.literal("browser.host.challenge.request"),
+  requestId: z.string(),
+});
+export const BrowserHostChallengeResponseSchema = z.object({
+  type: z.literal("browser.host.challenge.response"),
+  payload: z.object({
+    requestId: z.string(),
+    challenge: z.object({
+      id: z.string().min(1),
+      nonce: z.string().min(1),
+      clientId: z.string().min(1),
+      host: z.string().min(1),
+      chromePath: z.string().min(1),
+      profileDirectory: z.string().min(1),
+      extensionOrigin: z.string().min(1),
+      expiresAt: z.number().int().positive(),
+    }),
+  }),
+});
 export const BrowserHostRegisterRequestSchema = z.object({
   type: z.literal("browser.host.register.request"),
   requestId: z.string(),
   hostKind: z.string().min(1),
   supportedCommands: z.array(z.enum(BROWSER_AUTOMATION_COMMAND_NAMES)).min(1),
+  passport: z
+    .object({ challengeId: z.string().min(1), signatureBase64: z.string().min(1) })
+    .optional(),
 });
 export const BrowserHostRegisterResponseSchema = z.object({
   type: z.literal("browser.host.register.response"),
@@ -3192,6 +3217,7 @@ export const SubscriptionReleaseResponseSchema = z.object({
 });
 
 export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
+  BrowserHostChallengeRequestSchema,
   BrowserHostRegisterRequestSchema,
   SubscriptionReleaseRequestSchema,
   SessionEventsSetSubscriptionRequestSchema,
@@ -4585,6 +4611,42 @@ export const ArchiveWorkspaceResponseMessageSchema = z.object({
   }),
 });
 
+export const AgentMcpInspectionPayloadSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("not_configured"),
+    server: z.string(),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("not_advertised"),
+    server: z.string(),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    server: z.string(),
+    reason: z.enum([
+      "no_active_thread",
+      "provider_disconnected",
+      "timeout",
+      "provider_request_failed",
+      "invalid_provider_response",
+      "session_closed",
+      "unsupported_provider",
+    ]),
+    advertisedTools: z.array(z.string()).length(0),
+  }),
+  z.object({
+    status: z.literal("observed"),
+    server: z.string(),
+    connection: z.string(),
+    auth: z.string(),
+    advertisedTools: z.array(z.string()),
+    toolCatalog: z.enum(["listed", "failed", "not_exposed_by_provider_api"]),
+  }),
+]);
+export type AgentMcpInspectionPayload = z.infer<typeof AgentMcpInspectionPayloadSchema>;
+
 export const FetchAgentResponseMessageSchema = z.object({
   type: z.literal("fetch_agent_response"),
   payload: z.object({
@@ -4592,6 +4654,7 @@ export const FetchAgentResponseMessageSchema = z.object({
     agent: AgentSnapshotPayloadSchema.nullable(),
     project: ProjectPlacementPayloadSchema.nullable().optional(),
     error: z.string().nullable(),
+    mcpInspection: AgentMcpInspectionPayloadSchema.optional(),
   }),
 });
 
@@ -6779,6 +6842,7 @@ export const AgentSkillsImportLegacySelectionResponseSchema = z.object({
 });
 
 export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
+  BrowserHostChallengeResponseSchema,
   BrowserHostRegisterResponseSchema,
   SubscriptionReleaseResponseSchema,
   SessionEventsSetSubscriptionResponseSchema,

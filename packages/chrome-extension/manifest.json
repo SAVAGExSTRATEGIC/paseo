@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Paseo Browser Passport",
+  "version": "0.1.0",
+  "description": "Paired browser access for Paseo in the selected Chrome profile.",
+  "permissions": ["nativeMessaging", "tabs", "alarms"],
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "action": { "default_title": "Paseo Browser Passport" },
+  "options_page": "pair.html"
+}

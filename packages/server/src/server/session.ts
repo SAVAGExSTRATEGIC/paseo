@@ -130,6 +130,7 @@ import {
   type AgentPermissionResponse,
   type AgentRunOptions,
   type AgentSessionConfig,
+  type AgentMcpServerInspection,
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
@@ -686,6 +687,7 @@ export class Session {
       ),
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
+  private readonly browserPassportClientIds = new WeakMap<object, string>();
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
@@ -2222,14 +2224,29 @@ export class Session {
   private async registerBrowserHost(
     request: Extract<SessionInboundMessage, { type: "browser.host.register.request" }>,
     respond = true,
+    source?: object,
   ): Promise<void> {
     if (!this.browserToolsBroker) throw new Error("Browser hosting is unavailable");
+    const passportClientId = source ? this.browserPassportClientIds.get(source) : undefined;
+    if (
+      this.browserToolsBroker.requiresPassport &&
+      (!passportClientId ||
+        !request.passport ||
+        !this.browserToolsBroker.verifyPassportResponse({
+          clientId: passportClientId,
+          challengeId: request.passport.challengeId,
+          signatureBase64: request.passport.signatureBase64,
+        }))
+    ) {
+      throw new Error("Browser host passport verification failed");
+    }
     let unregister: (() => void) | undefined;
     const owner = this.delivery.begin("browser-host", undefined, () => unregister?.());
     try {
       unregister = this.browserToolsBroker.registerClient({
         id: owner.id,
         hostKind: request.hostKind,
+        ...(passportClientId ? { passportClientId } : {}),
         supportedCommands: request.supportedCommands,
         sendBrowserAutomationRequest: (message) => owner.emit(message),
       });
@@ -2248,7 +2265,24 @@ export class Session {
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
-    if (msg.type === "browser.host.register.request") return this.registerBrowserHost(msg);
+    if (msg.type === "browser.host.challenge.request") {
+      if (!this.browserToolsBroker?.requiresPassport || !source) {
+        throw new Error("Browser passport challenge is unavailable");
+      }
+      const passportClientId = this.browserPassportClientIds.get(source) ?? uuidv4();
+      this.browserPassportClientIds.set(source, passportClientId);
+      const challenge = this.browserToolsBroker.issuePassportChallenge(passportClientId);
+      this.emitForSource(
+        {
+          type: "browser.host.challenge.response",
+          payload: { requestId: msg.requestId, challenge },
+        },
+        source,
+      );
+      return Promise.resolve();
+    }
+    if (msg.type === "browser.host.register.request")
+      return this.registerBrowserHost(msg, true, source);
     if (msg.type === "browser.automation.execute.response") {
       if (source)
         this.browserToolsBroker?.receiveResponse(
@@ -2718,7 +2752,7 @@ export class Session {
       case "fetch_recent_provider_sessions_request":
         return this.handleFetchRecentProviderSessions(msg);
       case "fetch_agent_request":
-        return this.handleFetchAgent(msg.agentId, msg.requestId);
+        return this.handleFetchAgent(msg.agentId, msg.requestId, msg.mcpServer);
       case "delete_agent_request":
         return this.handleDeleteAgentRequest(msg.agentId, msg.requestId);
       case "archive_agent_request":
@@ -7564,12 +7598,30 @@ export class Session {
     }
   }
 
-  private async handleFetchAgent(agentIdOrIdentifier: string, requestId: string): Promise<void> {
+  private async handleFetchAgent(
+    agentIdOrIdentifier: string,
+    requestId: string,
+    mcpServer?: string,
+  ): Promise<void> {
     const resolved = await this.resolveAgentIdentifier(agentIdOrIdentifier);
     if (!resolved.ok) {
       this.emit({
         type: "fetch_agent_response",
         payload: { requestId, agent: null, project: null, error: resolved.error },
+      });
+      return;
+    }
+
+    if (mcpServer && (await this.agentStorage.hasDuplicateRecordPaths(resolved.agentId))) {
+      this.emit({
+        type: "fetch_agent_response",
+        payload: {
+          requestId,
+          agent: null,
+          project: null,
+          error:
+            "Agent ID has multiple saved records; MCP inspection requires an unambiguous session",
+        },
       });
       return;
     }
@@ -7591,9 +7643,58 @@ export class Session {
     const project = agent.workspaceId
       ? await this.buildProjectPlacementForWorkspaceId(agent.workspaceId)
       : null;
+    let mcpInspection: AgentMcpServerInspection | undefined;
+    if (mcpServer) {
+      const resident = this.agentManager.getAgent(resolved.agentId);
+      const providerSession = resident?.session;
+      if (!providerSession) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "session_closed",
+          advertisedTools: [],
+        };
+      } else if (!providerSession.inspectMcpServer) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "unsupported_provider",
+          advertisedTools: [],
+        };
+      } else {
+        try {
+          mcpInspection = await providerSession.inspectMcpServer(mcpServer);
+        } catch {
+          mcpInspection = {
+            status: "unavailable",
+            server: mcpServer,
+            reason: "provider_request_failed",
+            advertisedTools: [],
+          };
+        }
+      }
+      if (
+        resident &&
+        (this.agentManager.getAgent(resolved.agentId) !== resident ||
+          resident.session !== providerSession)
+      ) {
+        mcpInspection = {
+          status: "unavailable",
+          server: mcpServer,
+          reason: "session_closed",
+          advertisedTools: [],
+        };
+      }
+    }
     this.emit({
       type: "fetch_agent_response",
-      payload: { requestId, agent, project, error: null },
+      payload: {
+        requestId,
+        agent,
+        project,
+        error: null,
+        ...(mcpInspection ? { mcpInspection } : {}),
+      },
     });
   }
 

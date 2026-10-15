@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer, type Server as HTTPServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -14,6 +15,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
+import {
+  BrowserPassportVerifier,
+  buildPassportMessage,
+  type BrowserPassportChallenge,
+} from "./browser-tools/passport/verifier.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
@@ -35,6 +41,7 @@ interface BrowserToolsDaemonHarness {
 interface ConnectBrowserHostClientOptions {
   clientId?: string;
   capabilities?: Record<string, unknown>;
+  passportSigner?: (challenge: BrowserPassportChallenge) => string;
 }
 
 interface BrowserHostClientHandle {
@@ -196,11 +203,66 @@ describe("WebSocketServer browser tools wiring", () => {
     expect(harness.broker.getRegisteredClientCount()).toBe(1);
     expect(harness.broker.getPendingRequestCount()).toBe(0);
   });
+
+  it("admits only a signed browser passport through the WebSocket and requires a fresh signature after reconnect", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const verifier = new BrowserPassportVerifier({
+      binding: {
+        host: "test-host",
+        chromePath: "/Applications/Google Chrome.app",
+        profileDirectory: "Profile 3",
+        extensionOrigin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
+        publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+      },
+    });
+    const harness = await startBrowserToolsDaemonHarness(
+      new BrowserToolsBroker({
+        defaultTimeoutMs: 500,
+        createRequestId: createRequestIdSequence(),
+        passportVerifier: verifier,
+      }),
+    );
+    const signer = (challenge: BrowserPassportChallenge) =>
+      sign("sha256", buildPassportMessage(challenge), {
+        key: privateKey,
+        dsaEncoding: "ieee-p1363",
+      }).toString("base64");
+
+    await expect(
+      harness.connectBrowserHostClient({ capabilities: {}, passportSigner: () => "invalid" }),
+    ).rejects.toThrow();
+    expect(harness.broker.getRegisteredClientCount()).toBe(0);
+
+    const first = await harness.connectBrowserHostClient({
+      capabilities: {},
+      passportSigner: signer,
+    });
+    expect(harness.broker.getRegisteredClientCount()).toBe(1);
+    await first.disconnect();
+    expect(harness.broker.getRegisteredClientCount()).toBe(0);
+
+    const resumed = await harness.connectBrowserHostClient({
+      capabilities: {},
+      passportSigner: signer,
+    });
+    const resultPromise = harness.broker.execute({ command: { command: "list_tabs", args: {} } });
+    const request = await resumed.nextBrowserRequest();
+    resumed.respondToBrowserRequest({
+      type: "browser.automation.execute.response",
+      payload: {
+        requestId: request.requestId,
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      },
+    });
+    await expect(resultPromise).resolves.toMatchObject({ ok: true });
+  });
 });
 
-async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarness> {
+async function startBrowserToolsDaemonHarness(
+  broker = createBroker(),
+): Promise<BrowserToolsDaemonHarness> {
   const httpServer = createServer();
-  const broker = createBroker();
   const wsServer = createVoiceAssistantWebSocketServer({ httpServer, broker });
   const clients = new Set<DaemonClient>();
 
@@ -227,10 +289,21 @@ async function startBrowserToolsDaemonHarness(): Promise<BrowserToolsDaemonHarne
       });
 
       await client.connect();
-      const capability = (options.capabilities ?? browserHostCapabilities())[
-        CLIENT_CAPS.browserHost
-      ] as { hostKind: "desktop app"; supportedCommands: BrowserAutomationCommandName[] };
-      const observation = client.registerBrowserHost(capability);
+      const capability = browserHostCapabilities()[CLIENT_CAPS.browserHost] as {
+        hostKind: "desktop app";
+        supportedCommands: BrowserAutomationCommandName[];
+      };
+      const passport = options.passportSigner
+        ? await client.requestBrowserHostChallenge().then((challenge) => ({
+            challengeId: challenge.id,
+            signatureBase64: options.passportSigner!(challenge),
+          }))
+        : undefined;
+      const observation = client.registerBrowserHost({
+        ...((options.capabilities?.[CLIENT_CAPS.browserHost] as typeof capability | undefined) ??
+          capability),
+        ...(passport ? { passport } : {}),
+      });
       await observation.ready;
 
       return {

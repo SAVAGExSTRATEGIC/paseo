@@ -14,6 +14,7 @@ import {
   type AgentPermissionRequest,
   type AgentPermissionResponse,
   type AgentPermissionResult,
+  type AgentMcpServerInspection,
   type AgentProviderNotice,
   type AgentPromptContentBlock,
   type AgentPromptInput,
@@ -3349,6 +3350,47 @@ interface ConsumedRootCompaction {
   itemId?: string;
 }
 
+function parseCodexMcpServerInspection(server: string, raw: unknown): AgentMcpServerInspection {
+  const response = toObjectRecord(raw);
+  const invalid = (): AgentMcpServerInspection => ({
+    status: "unavailable",
+    server,
+    reason: "invalid_provider_response",
+    advertisedTools: [],
+  });
+  if (!response || !Array.isArray(response.data) || response.nextCursor != null) return invalid();
+  if (response.data.length === 0) return { status: "not_advertised", server, advertisedTools: [] };
+  if (response.data.length !== 1) return invalid();
+  const found = toObjectRecord(response.data[0]);
+  const tools = toObjectRecord(found?.tools);
+  if (found?.name !== server || !tools) return invalid();
+  const toolCatalog = found.toolsError == null ? "listed" : "failed";
+  const connectionStates = new Set([
+    "notStarted",
+    "starting",
+    "connected",
+    "authenticationRequired",
+    "failed",
+    "cancelled",
+    "disabled",
+  ]);
+  const authStates = new Set(["unknown", "unsupported", "notLoggedIn", "bearerToken", "oAuth"]);
+  return {
+    status: "observed",
+    server,
+    connection:
+      typeof found.runtimeStatus === "string" && connectionStates.has(found.runtimeStatus)
+        ? found.runtimeStatus
+        : "unknown",
+    auth:
+      typeof found.authStatus === "string" && authStates.has(found.authStatus)
+        ? found.authStatus
+        : "unknown",
+    advertisedTools: toolCatalog === "listed" ? Object.keys(tools).sort() : [],
+    toolCatalog,
+  };
+}
+
 export class CodexAppServerAgentSession implements AgentSession {
   readonly provider = CODEX_PROVIDER;
   readonly capabilities = CODEX_APP_SERVER_CAPABILITIES;
@@ -4487,6 +4529,61 @@ export class CodexAppServerAgentSession implements AgentSession {
     };
     this.cachedRuntimeInfo = info;
     return { ...info };
+  }
+
+  async inspectMcpServer(server: string): Promise<AgentMcpServerInspection> {
+    if (!Object.hasOwn(this.config.mcpServers ?? {}, server)) {
+      return { status: "not_configured", server, advertisedTools: [] };
+    }
+    const threadId = this.currentThreadId;
+    if (!threadId) {
+      return { status: "unavailable", server, reason: "no_active_thread", advertisedTools: [] };
+    }
+    const client = this.client;
+    if (!client || this.closed) {
+      return {
+        status: "unavailable",
+        server,
+        reason: "provider_disconnected",
+        advertisedTools: [],
+      };
+    }
+    try {
+      const response = await client.request(
+        "mcpServerStatus/list",
+        { threadId, serverName: server, detail: "toolsAndAuthOnly" },
+        5_000,
+      );
+      if (this.currentThreadId !== threadId || this.client !== client || this.closed) {
+        return {
+          status: "unavailable",
+          server,
+          reason: "provider_disconnected",
+          advertisedTools: [],
+        };
+      }
+      return parseCodexMcpServerInspection(server, response);
+    } catch (error) {
+      if (this.currentThreadId !== threadId || this.client !== client || this.closed) {
+        return {
+          status: "unavailable",
+          server,
+          reason: "provider_disconnected",
+          advertisedTools: [],
+        };
+      }
+      let reason: "timeout" | "unsupported_provider" | "provider_request_failed" =
+        "provider_request_failed";
+      if (
+        error instanceof Error &&
+        error.message === "Codex app-server request timed out for mcpServerStatus/list"
+      ) {
+        reason = "timeout";
+      } else if (error instanceof CodexAppServerRpcError && error.code === -32601) {
+        reason = "unsupported_provider";
+      }
+      return { status: "unavailable", server, reason, advertisedTools: [] };
+    }
   }
 
   async getAvailableModes(): Promise<AgentMode[]> {

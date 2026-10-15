@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${PASEO_HOME:-}" ]; then
+  echo "Paseo browser host requires its paired home." >&2
+  exit 1
+fi
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+RESOURCES_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+HELPER="${RESOURCES_DIR}/../Frameworks/Paseo Helper.app/Contents/MacOS/Paseo Helper"
+RUNNER="${RESOURCES_DIR}/app.asar.unpacked/dist/daemon/node-entrypoint-runner.js"
+ENTRY="${RESOURCES_DIR}/app.asar/node_modules/@getpaseo/cli/dist/browser-host/native-host-entry.js"
+
+if [ ! -x "$HELPER" ]; then
+  echo "Paseo browser host helper is unavailable." >&2
+  exit 1
+fi
+
+exec env ELECTRON_RUN_AS_NODE=1 PASEO_NODE_ENV=production "$HELPER" "$RUNNER" node-script "$ENTRY" "$@"
