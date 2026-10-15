@@ -41,6 +41,7 @@ interface RegisteredBrowserHost {
 export interface BrowserToolsBrokerOptions {
   defaultTimeoutMs?: number;
   createRequestId?: () => string;
+  admitHost?: (client: BrowserHostClient) => boolean;
 }
 
 const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
@@ -48,6 +49,7 @@ const DEFAULT_BROWSER_TOOLS_TIMEOUT_MS = 15_000;
 export class BrowserToolsBroker {
   private readonly defaultTimeoutMs: number;
   private readonly createRequestId: () => string;
+  private readonly admitHost?: (client: BrowserHostClient) => boolean;
   private readonly clients = new Map<string, RegisteredBrowserHost>();
   private readonly pending = new Map<string, PendingBrowserToolsRequest>();
   private readonly browserHostByBrowserId = new Map<string, string>();
@@ -57,9 +59,16 @@ export class BrowserToolsBroker {
   public constructor(options: BrowserToolsBrokerOptions) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_BROWSER_TOOLS_TIMEOUT_MS;
     this.createRequestId = options.createRequestId ?? (() => `browser_${randomUUID()}`);
+    this.admitHost = options.admitHost;
   }
 
   public registerClient(client: BrowserHostClient): () => void {
+    if (
+      this.admitHost &&
+      (!this.admitHost(client) || (this.clients.size > 0 && !this.clients.has(client.id)))
+    ) {
+      throw new Error("Browser host admission failed");
+    }
     this.unregisterClient(client.id);
     const registeredAt = ++this.registrationSequence;
     this.clients.set(client.id, {
@@ -82,7 +91,9 @@ export class BrowserToolsBroker {
         continue;
       }
       this.browserHostByBrowserId.delete(browserId);
-      this.strandedBrowserHostByBrowserId.set(browserId, clientId);
+      if (!this.admitHost) {
+        this.strandedBrowserHostByBrowserId.set(browserId, clientId);
+      }
     }
 
     for (const [requestId, pending] of this.pending) {
@@ -311,7 +322,7 @@ export class BrowserToolsBroker {
       };
     }
 
-    if (this.clients.size === 1) {
+    if (!this.admitHost && this.clients.size === 1) {
       const host = this.selectMostRecentlyRegisteredHost();
       if (host) {
         return { ok: true, value: host };

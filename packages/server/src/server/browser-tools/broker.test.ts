@@ -64,10 +64,13 @@ class FailingBrowserHostClient implements BrowserHostClient {
   }
 }
 
-function createBroker(options: { timeoutMs?: number } = {}): BrowserToolsBroker {
+function createBroker(
+  options: { timeoutMs?: number; admitHost?: (client: BrowserHostClient) => boolean } = {},
+): BrowserToolsBroker {
   return new BrowserToolsBroker({
     defaultTimeoutMs: options.timeoutMs ?? 100,
     createRequestId: () => "req-1",
+    ...(options.admitHost ? { admitHost: options.admitHost } : {}),
   });
 }
 
@@ -92,6 +95,57 @@ describe("BrowserToolsBroker", () => {
         retryable: true,
       },
     });
+  });
+
+  test("restricted broker rejects an unverified host before listing tabs", async () => {
+    const broker = createBroker({ admitHost: () => false });
+    const client = new FakeBrowserHostClient("unverified-host");
+
+    expect(() => broker.registerClient(client)).toThrow("Browser host admission failed");
+    expect(broker.getRegisteredClientCount()).toBe(0);
+    await expect(
+      broker.execute({ command: { command: "list_tabs", args: {} } }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "browser_no_host" },
+    });
+    expect(client.receivedRequests).toEqual([]);
+  });
+
+  test("restricted broker rejects an ambiguous second host without replacing the admitted host", () => {
+    const broker = createBroker({ admitHost: () => true });
+    const paired = new FakeBrowserHostClient("paired-host");
+    const second = new FakeBrowserHostClient("second-host");
+    broker.registerClient(paired);
+
+    expect(() => broker.registerClient(second)).toThrow("Browser host admission failed");
+    expect(broker.getRegisteredClientCount()).toBe(1);
+    expect(second.receivedRequests).toEqual([]);
+  });
+
+  test("restricted broker invalidates tab IDs after verified host reconnect", async () => {
+    const broker = createBroker({ admitHost: (client) => client.id === "paired-host" });
+    const first = new FakeBrowserHostClient("paired-host");
+    const disconnect = broker.registerClient(first);
+    const listing = broker.execute({ command: { command: "list_tabs", args: {} } });
+    first.resolveLatestWith(broker, {
+      requestId: "req-1",
+      ok: true,
+      result: {
+        command: "list_tabs",
+        tabs: [{ browserId: BROWSER_ID, url: "https://example.com" }],
+      },
+    });
+    await listing;
+    disconnect();
+
+    const reconnected = new FakeBrowserHostClient("paired-host");
+    broker.registerClient(reconnected);
+    await expect(broker.execute({ command: snapshotCommand() })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "browser_tab_not_found" },
+    });
+    expect(reconnected.receivedRequests).toEqual([]);
   });
 
   test("invalid browser requests return structured failures without contacting a host", async () => {
