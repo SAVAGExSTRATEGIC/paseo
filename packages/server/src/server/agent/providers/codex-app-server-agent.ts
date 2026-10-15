@@ -4535,10 +4535,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (!Object.hasOwn(this.config.mcpServers ?? {}, server)) {
       return { status: "not_configured", server, advertisedTools: [] };
     }
-    if (!this.currentThreadId) {
+    const threadId = this.currentThreadId;
+    if (!threadId) {
       return { status: "unavailable", server, reason: "no_active_thread", advertisedTools: [] };
     }
-    if (!this.client || this.closed) {
+    const client = this.client;
+    if (!client || this.closed) {
       return {
         status: "unavailable",
         server,
@@ -4547,15 +4549,29 @@ export class CodexAppServerAgentSession implements AgentSession {
       };
     }
     try {
-      return parseCodexMcpServerInspection(
-        server,
-        await this.client.request(
-          "mcpServerStatus/list",
-          { threadId: this.currentThreadId, serverName: server, detail: "toolsAndAuthOnly" },
-          5_000,
-        ),
+      const response = await client.request(
+        "mcpServerStatus/list",
+        { threadId, serverName: server, detail: "toolsAndAuthOnly" },
+        5_000,
       );
+      if (this.currentThreadId !== threadId || this.client !== client || this.closed) {
+        return {
+          status: "unavailable",
+          server,
+          reason: "provider_disconnected",
+          advertisedTools: [],
+        };
+      }
+      return parseCodexMcpServerInspection(server, response);
     } catch (error) {
+      if (this.currentThreadId !== threadId || this.client !== client || this.closed) {
+        return {
+          status: "unavailable",
+          server,
+          reason: "provider_disconnected",
+          advertisedTools: [],
+        };
+      }
       const reason =
         error instanceof Error &&
         error.message === "Codex app-server request timed out for mcpServerStatus/list"

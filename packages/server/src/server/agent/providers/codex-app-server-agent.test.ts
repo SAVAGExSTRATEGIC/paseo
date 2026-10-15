@@ -337,6 +337,36 @@ test("Codex MCP inspection separates missing catalog, timeout and provider failu
   });
 });
 
+test("Codex MCP inspection discards a reply from a replaced native thread", async () => {
+  const session = createSession({
+    mcpServers: { router: { type: "http", url: "https://example.test/mcp" } },
+  });
+  const reply = deferred<unknown>();
+  session.client = { request: vi.fn().mockReturnValue(reply.promise) };
+
+  const inspection = session.inspectMcpServer("router");
+  session.currentThreadId = "replacement-thread";
+  reply.resolve({
+    data: [
+      {
+        name: "router",
+        runtimeStatus: "connected",
+        authStatus: "bearerToken",
+        tools: { read: { name: "read" } },
+        toolsError: null,
+      },
+    ],
+    nextCursor: null,
+  });
+
+  expect(await inspection).toEqual({
+    status: "unavailable",
+    server: "router",
+    reason: "provider_disconnected",
+    advertisedTools: [],
+  });
+});
+
 describe("Codex active-turn steering admission", () => {
   test("a steer without the clearing contract leaves permissions open", async () => {
     const appServer = createFakeCodexAppServer({
