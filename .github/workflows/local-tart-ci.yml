@@ -1,23 +1,23 @@
 # Commission only after host, network, credentials and runner identity are verified.
 # This adds a native macOS qualification lane; existing platform checks remain separate.
 name: Local Tart CI
-run-name: Tart macOS PR ${{ inputs.pull_request }} @ ${{ inputs.expected_head }}
+run-name: Tart macOS ${{ inputs.pull_request || 'main' }} @ ${{ inputs.expected_head }}
 "on":
   workflow_dispatch:
     inputs:
       pull_request:
-        description: Open, non-draft PR in this repository
-        required: true
+        description: Open, non-draft PR; leave blank to qualify exact current main
+        required: false
         type: string
       expected_head:
-        description: Exact 40-character PR head SHA
+        description: Exact 40-character PR head or current main SHA
         required: true
         type: string
 permissions:
   contents: read
   pull-requests: read
 concurrency:
-  group: paseo-tart-${{ inputs.pull_request }}
+  group: paseo-tart-${{ inputs.pull_request || 'main' }}
   cancel-in-progress: false
 env:
   ONNXRUNTIME_NODE_INSTALL: skip
@@ -52,7 +52,8 @@ jobs:
               env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_SHA !== env.GITHUB_SHA) {
             throw new Error('Untrusted workflow origin');
           }
-          if (!/^[1-9][0-9]*$/.test(env.EXPECTED_PR) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
+          const pr = env.EXPECTED_PR || '';
+          if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }
           const read = async path => {
@@ -63,12 +64,18 @@ jobs:
             if (!response.ok) throw new Error('GitHub source read failed');
             return response.json();
           };
-          const [pull, main] = await Promise.all([read(`pulls/${env.EXPECTED_PR}`), read('commits/main')]);
-          if (pull.state !== 'open' || pull.draft || pull.head.sha !== env.EXPECTED_HEAD ||
-              pull.head.repo.full_name !== repo || pull.head.repo.id !== repositoryId ||
-              pull.base.repo.full_name !== repo || pull.base.repo.id !== repositoryId ||
-              pull.base.ref !== 'main' || pull.base.sha !== main.sha || main.sha !== env.GITHUB_SHA) {
-            throw new Error('Source changed or is outside admitted repository');
+          const main = await read('commits/main');
+          if (main.sha !== env.GITHUB_SHA) throw new Error('Trusted main changed');
+          if (pr === '') {
+            if (env.EXPECTED_HEAD !== main.sha) throw new Error('Main qualification head differs');
+          } else {
+            const pull = await read(`pulls/${pr}`);
+            if (pull.state !== 'open' || pull.draft || pull.head.sha !== env.EXPECTED_HEAD ||
+                pull.head.repo.full_name !== repo || pull.head.repo.id !== repositoryId ||
+                pull.base.repo.full_name !== repo || pull.base.repo.id !== repositoryId ||
+                pull.base.ref !== 'main' || pull.base.sha !== main.sha) {
+              throw new Error('Source changed or is outside admitted repository');
+            }
           }
           SOURCE_GATE
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

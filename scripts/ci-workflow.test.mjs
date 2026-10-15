@@ -85,6 +85,31 @@ test("Tart source gate accepts the exact open same-repository PR and trusted cur
   assert.equal(fixture.requests.length, 2);
 });
 
+test("Tart main qualification admits only exact current trusted main without a PR", async () => {
+  const fixture = tartSourceFixture();
+  fixture.env.EXPECTED_PR = "";
+  fixture.env.EXPECTED_HEAD = fixture.main.sha;
+  await runTartSourceGate(fixture);
+  assert.deepEqual(fixture.requests, [
+    "https://api.github.com/repos/SAVAGExSTRATEGIC/paseo/commits/main",
+  ]);
+});
+
+for (const [name, mutate] of [
+  ["non-main source head", (f) => (f.env.EXPECTED_HEAD = "b".repeat(40))],
+  ["main moved after dispatch", (f) => (f.main.sha = "c".repeat(40))],
+  ["unreadable main", (f) => (f.httpOk = false)],
+  ["foreign workflow", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
+]) {
+  test(`Tart main qualification refuses ${name}`, async () => {
+    const fixture = tartSourceFixture();
+    fixture.env.EXPECTED_PR = "";
+    fixture.env.EXPECTED_HEAD = fixture.main.sha;
+    mutate(fixture);
+    await assert.rejects(runTartSourceGate(fixture));
+  });
+}
+
 for (const [name, mutate] of [
   ["foreign repository", (f) => (f.env.GITHUB_REPOSITORY = "foreign/paseo")],
   ["recreated repository ID", (f) => (f.env.GITHUB_REPOSITORY_ID = "1")],
