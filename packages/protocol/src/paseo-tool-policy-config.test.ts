@@ -3,6 +3,12 @@ import { describe, expect, test } from "vitest";
 import { MutableDaemonConfigPatchSchema, MutableDaemonConfigSchema } from "./messages.js";
 import { ProviderOverrideSchema, ProviderPaseoToolsPolicySchema } from "./provider-config.js";
 
+test("provider overrides retain an explicit launch mode", () => {
+  expect(ProviderOverrideSchema.parse({ launchModeId: "full-access" }).launchModeId).toBe(
+    "full-access",
+  );
+});
+
 describe("provider Paseo-tool policy", () => {
   test("accepts arbitrary tool IDs and leaves an empty policy enabled by default", () => {
     expect(

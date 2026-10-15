@@ -717,6 +717,7 @@ Every entry under `agents.providers` accepts these fields:
 | `models`           | `ProviderProfileModel[]`  | No                | Static model list (overrides runtime discovery)                    |
 | `additionalModels` | `ProviderProfileModel[]`  | No                | Static model additions (merged with runtime discovery or `models`) |
 | `disallowedTools`  | `string[]`                | No                | Tool names to disable for this provider (e.g. `["WebSearch"]`)     |
+| `launchModeId`     | `string`                  | No                | Mode enforced for every new session; derived providers inherit it  |
 | `enabled`          | `boolean`                 | No                | Set to `false` to hide the provider (default: `true`)              |
 | `order`            | `number`                  | No                | Sort order in the provider list                                    |
 

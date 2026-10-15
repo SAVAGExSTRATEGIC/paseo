@@ -2257,6 +2257,34 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
 });
 
+test("createAgent enforces the configured launch mode for new sessions", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-default-mode-"));
+  const client = new TestAgentClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    providerDefinitions: {
+      codex: { enabled: true, launchModeId: "full-access" },
+    },
+    logger,
+  });
+
+  try {
+    await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await manager.createAgent({ provider: "codex", cwd: workdir, modeId: "auto" }, undefined, {
+      workspaceId: undefined,
+    });
+
+    expect(client.createdConfigs.map((config) => config.modeId)).toEqual([
+      "full-access",
+      "full-access",
+    ]);
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("daemon append system prompt is injected into Pi configs", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");

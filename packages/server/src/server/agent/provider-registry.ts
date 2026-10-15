@@ -68,6 +68,7 @@ export { AGENT_PROVIDER_DEFINITIONS, getAgentProviderDefinition };
 export interface ProviderDefinition extends AgentProviderDefinition {
   /** Effective inputs after overrides and inheritance; plugin registrations are owned separately. */
   configuration: Omit<ResolvedProvider, "createBaseClient" | "contract"> | null;
+  launchModeId?: string;
   iconSvg?: string;
   enabled: boolean;
   /**
@@ -133,6 +134,7 @@ type ProviderClientFactory = (
 
 interface ResolvedProvider {
   definition: AgentProviderDefinition;
+  launchModeId?: string;
   runtimeSettings?: ProviderRuntimeSettings;
   profileModels: ProviderProfileModel[];
   additionalModels: ProviderProfileModel[];
@@ -301,6 +303,7 @@ function applyOverrideToDefinition(
     ...definition,
     label: override.label ?? definition.label,
     description: override.description ?? definition.description,
+    defaultModeId: override.launchModeId ?? definition.defaultModeId,
   };
 }
 
@@ -318,6 +321,7 @@ function createDerivedDefinition(
     id: providerId,
     label: override.label,
     description: override.description ?? baseDefinition.description,
+    defaultModeId: override.launchModeId ?? baseDefinition.defaultModeId,
   };
 }
 
@@ -611,6 +615,20 @@ function wrapClientProvider(
   };
 }
 
+function withConfiguredLaunchMode(
+  provider: AgentProvider,
+  launchModeId: string | undefined,
+  catalog: ProviderCatalog,
+): ProviderCatalog {
+  if (!launchModeId) return catalog;
+  if (!catalog.modes.some((mode) => mode.id === launchModeId)) {
+    throw new Error(
+      `Configured launch mode '${launchModeId}' is not available for provider '${provider}'`,
+    );
+  }
+  return { ...catalog, defaultModeId: launchModeId };
+}
+
 function createRegistryEntry(
   logger: Logger,
   provider: AgentProvider,
@@ -640,11 +658,14 @@ function createRegistryEntry(
     });
 
   const hasStaticModes = resolved.definition.modes.length > 0;
+  const withDefaultMode = (catalog: ProviderCatalog): ProviderCatalog =>
+    withConfiguredLaunchMode(provider, resolved.launchModeId, catalog);
 
   const { createBaseClient: _createBaseClient, contract: _contract, ...configuration } = resolved;
   return {
     ...resolved.definition,
     configuration,
+    launchModeId: resolved.launchModeId,
     enabled: resolved.enabled,
     derivedFromProviderId: resolved.derivedFromProviderId,
     supportsExactMcpPreapproval: resolved.contract.supportsExactMcpPreapproval,
@@ -688,24 +709,24 @@ function createRegistryEntry(
                 signal: context?.signal,
               }),
           );
-          return {
+          return withDefaultMode({
             models,
             modes: decorateModes(resolved.definition.modes),
             defaultModeId,
-          };
+          });
         }
         const catalog = await catalogClient.fetchCatalog(options, context);
-        return { ...catalog, models, modes: decorateModes(catalog.modes) };
+        return withDefaultMode({ ...catalog, models, modes: decorateModes(catalog.modes) });
       }
 
       const catalog = await catalogClient.fetchCatalog(options, context);
-      return {
+      return withDefaultMode({
         ...catalog,
         models: mergeModels(provider, profileModels, additionalModels, catalog.models, {
           profileModelsAreAdditive: resolved.profileModelsAreAdditive,
         }),
         modes: decorateModes(catalog.modes),
-      };
+      });
     },
   };
 }
@@ -741,6 +762,7 @@ function resolveRegisteredProvider(input: RegisteredProvider): ResolvedProvider 
   const runtimeSettings = mergeRuntimeSettings(input.runtimeSettings, toRuntimeSettings(override));
   return {
     definition: applyOverrideToDefinition(definition, override),
+    launchModeId: override?.launchModeId,
     runtimeSettings,
     profileModels: override?.models ?? [],
     additionalModels: override?.additionalModels ?? [],
@@ -826,6 +848,7 @@ function addDerivedProviders(
           },
           override,
         ),
+        launchModeId: override.launchModeId,
         runtimeSettings: toRuntimeSettings(override),
         profileModels: override.models ?? [],
         additionalModels: override.additionalModels ?? [],
@@ -881,6 +904,7 @@ function addDerivedProviders(
 
     resolvedProviders.set(providerId, {
       definition: createDerivedDefinition(providerId, baseDefinition, override),
+      launchModeId: override.launchModeId ?? baseProvider.launchModeId,
       runtimeSettings: mergedRuntimeSettings,
       profileModels: override.models ?? [],
       additionalModels: override.additionalModels ?? [],

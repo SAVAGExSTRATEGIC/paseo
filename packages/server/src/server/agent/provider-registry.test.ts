@@ -609,6 +609,32 @@ test("OMP can be enabled without custom provider boilerplate", () => {
   expect(registry.omp.enabled).toBe(true);
 });
 
+test("configured launch mode appears in the provider catalog", async () => {
+  const omp = new FakeOmp();
+  const registry = buildProviderRegistry(logger, {
+    ompRuntime: omp,
+    providerOverrides: {
+      omp: { launchModeId: "ask" },
+    },
+  });
+
+  expect(registry.omp.defaultModeId).toBe("ask");
+  const catalog = await registry.omp.fetchCatalog({ scope: "workspace", cwd: "/tmp/registry-omp" });
+  expect(catalog.defaultModeId).toBe("ask");
+});
+
+test("derived provider inherits a configured launch mode", () => {
+  const registry = buildProviderRegistry(logger, {
+    providerOverrides: {
+      claude: { launchModeId: "bypassPermissions" },
+      "claude-team": { extends: "claude", label: "Claude Team" },
+    },
+  });
+
+  expect(registry.claude.defaultModeId).toBe("bypassPermissions");
+  expect(registry["claude-team"].defaultModeId).toBe("bypassPermissions");
+});
+
 test("new provider extending claude appears in registry", () => {
   const registry = buildProviderRegistry(logger, {
     providerOverrides: {

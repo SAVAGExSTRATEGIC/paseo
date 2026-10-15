@@ -185,7 +185,10 @@ export interface AgentManagerProviderState {
   providerDefinitions: Partial<
     Record<
       AgentProvider,
-      Pick<ProviderDefinition, "enabled" | "derivedFromProviderId" | "applyToolPolicy">
+      Pick<
+        ProviderDefinition,
+        "enabled" | "derivedFromProviderId" | "launchModeId" | "applyToolPolicy"
+      >
     >
   >;
   clients: Partial<Record<AgentProvider, AgentClient>>;
@@ -366,6 +369,7 @@ export class ProviderSnapshotManager {
       providerDefinitions[provider] = {
         enabled: definition.enabled,
         derivedFromProviderId: definition.derivedFromProviderId,
+        launchModeId: definition.launchModeId,
         applyToolPolicy: definition.applyToolPolicy,
       };
       if (definition.enabled) {

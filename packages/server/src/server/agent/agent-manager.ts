@@ -298,6 +298,7 @@ interface AgentManagerRescueTimeouts {
 interface ProviderEnabledFlag {
   enabled: boolean;
   derivedFromProviderId?: string | null;
+  launchModeId?: string;
   applyToolPolicy?: (
     config: AgentSessionConfig,
     toolPolicy: ToolPolicy | undefined,
@@ -1288,6 +1289,10 @@ export class AgentManager {
       });
       config = { ...request.config, internal: config.internal };
       options = { ...options, env: request.env };
+    }
+    const launchModeId = this.providerDefinitions.get(config.provider)?.launchModeId;
+    if (launchModeId) {
+      config = { ...config, modeId: launchModeId };
     }
     await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
