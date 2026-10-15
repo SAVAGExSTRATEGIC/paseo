@@ -32,6 +32,7 @@ describe("browser automation protocol integration", () => {
             host: "example.local",
             chromePath: "/Applications/Google Chrome.app",
             profileDirectory: "Profile 3",
+            extensionOrigin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
             expiresAt: 1000,
           },
         },

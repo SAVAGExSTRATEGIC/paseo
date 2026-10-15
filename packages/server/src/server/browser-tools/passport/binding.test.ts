@@ -12,6 +12,7 @@ const expected = {
   expectedHost: "test-host",
   expectedChromePath: "/Applications/Google Chrome.app",
   expectedProfileDirectory: "Profile 3",
+  extensionOrigin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
 };
 
 afterEach(() => {
@@ -33,6 +34,7 @@ function writeBinding(home: string, changes: Record<string, unknown> = {}): void
       host: expected.expectedHost,
       chromePath: expected.expectedChromePath,
       profileDirectory: expected.expectedProfileDirectory,
+      extensionOrigin: expected.extensionOrigin,
       publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
       ...changes,
     }),
@@ -57,6 +59,8 @@ describe("browser passport startup", () => {
     writeBinding(home, { profileDirectory: "Default" });
     expect(load()).toEqual({ required: true, state: "awaiting_pairing" });
     writeBinding(home, { host: "other-host" });
+    expect(load()).toEqual({ required: true, state: "awaiting_pairing" });
+    writeBinding(home, { extensionOrigin: "chrome-extension://wrong/" });
     expect(load()).toEqual({ required: true, state: "awaiting_pairing" });
     writeBinding(home, { publicKeySpkiBase64: "not-a-key" });
     expect(load()).toEqual({ required: true, state: "awaiting_pairing" });

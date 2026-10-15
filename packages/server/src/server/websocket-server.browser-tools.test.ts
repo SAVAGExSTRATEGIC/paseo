@@ -211,6 +211,7 @@ describe("WebSocketServer browser tools wiring", () => {
         host: "test-host",
         chromePath: "/Applications/Google Chrome.app",
         profileDirectory: "Profile 3",
+        extensionOrigin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
         publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
       },
     });

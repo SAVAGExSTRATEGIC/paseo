@@ -4,6 +4,7 @@ export interface BrowserPassportBinding {
   host: string;
   chromePath: string;
   profileDirectory: string;
+  extensionOrigin: string;
   publicKeySpkiBase64: string;
 }
 
@@ -14,6 +15,7 @@ export interface BrowserPassportChallenge {
   host: string;
   chromePath: string;
   profileDirectory: string;
+  extensionOrigin: string;
   expiresAt: number;
 }
 
@@ -37,6 +39,7 @@ export function buildPassportMessage(challenge: BrowserPassportChallenge): Buffe
       challenge.host,
       challenge.chromePath,
       challenge.profileDirectory,
+      challenge.extensionOrigin,
       challenge.expiresAt,
     ]),
     "utf8",
@@ -85,6 +88,7 @@ export class BrowserPassportVerifier {
       host: this.binding.host,
       chromePath: this.binding.chromePath,
       profileDirectory: this.binding.profileDirectory,
+      extensionOrigin: this.binding.extensionOrigin,
       expiresAt: this.now() + this.challengeTtlMs,
     };
     this.pending.set(challenge.id, challenge);

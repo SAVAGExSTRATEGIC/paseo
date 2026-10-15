@@ -6,6 +6,7 @@ const binding = {
   host: "SAVAGEs-MacBook-Pro.local",
   chromePath: "/Applications/Google Chrome.app",
   profileDirectory: "Profile 3",
+  extensionOrigin: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/",
 };
 
 function fixture(now = 1_000) {
@@ -78,6 +79,32 @@ describe("BrowserPassportVerifier", () => {
       false,
     );
     expect(verifier.consumeVerifiedClient(clientId)).toBe(false);
+  });
+
+  test("binds the signature to the extension origin", () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    const verifier = new BrowserPassportVerifier({
+      binding: {
+        ...binding,
+        publicKeySpkiBase64: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+      },
+    });
+    const challenge = verifier.issueChallenge("chrome-host");
+    const signatureBase64 = sign(
+      "sha256",
+      buildPassportMessage({
+        ...challenge,
+        extensionOrigin: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
+      }),
+      { key: privateKey, dsaEncoding: "ieee-p1363" },
+    ).toString("base64");
+    expect(
+      verifier.verifyResponse({
+        challengeId: challenge.id,
+        clientId: "chrome-host",
+        signatureBase64,
+      }),
+    ).toBe(false);
   });
 
   test("rejects a challenge after expiry", () => {

@@ -3187,6 +3187,7 @@ export const BrowserHostChallengeResponseSchema = z.object({
       host: z.string().min(1),
       chromePath: z.string().min(1),
       profileDirectory: z.string().min(1),
+      extensionOrigin: z.string().min(1),
       expiresAt: z.number().int().positive(),
     }),
   }),

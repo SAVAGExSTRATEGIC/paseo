@@ -12,6 +12,7 @@ const BrowserPassportBindingFileSchema = z.object({
   host: z.string().min(1),
   chromePath: z.string().min(1),
   profileDirectory: z.string().min(1),
+  extensionOrigin: z.string().regex(/^chrome-extension:\/\/[a-p]{32}\/$/),
   publicKeySpkiBase64: z.string().min(1),
 });
 
