@@ -117,6 +117,7 @@ interface SessionTestAccess {
   agentStorage: {
     list(...args: unknown[]): Promise<unknown[]>;
     get(agentId: string): Promise<unknown>;
+    hasDuplicateRecordPaths(agentId: string): Promise<boolean>;
     upsert(record: unknown): Promise<void>;
   };
   agentManager: {
@@ -683,6 +684,7 @@ function createSessionForWorkspaceTests(
               })
             : null,
         upsert: async () => {},
+        hasDuplicateRecordPaths: async () => false,
         ...options.agentStorage,
       }),
       projectRegistry: options.projectRegistry ?? {
@@ -3549,6 +3551,40 @@ test("fetch_agent_request reads one resident MCP status without loading a closed
           advertisedTools: ["search"],
           toolCatalog: "listed",
         },
+      },
+    },
+  ]);
+});
+
+test("fetch_agent_request rejects MCP inspection for a duplicate saved agent ID", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const session = createSessionForWorkspaceTests();
+  const agent = makeAgent({ id: "duplicate-agent", cwd: "/tmp/duplicate-agent", status: "idle" });
+  session.emit = (message) => {
+    if (isSessionOutboundMessage(message)) emitted.push(message);
+  };
+  session.resolveAgentIdentifier = async () => ({ ok: true, agentId: agent.id });
+  session.agentStorage.hasDuplicateRecordPaths = async () => true;
+  const getAgentPayloadById = vi.fn().mockResolvedValue(agent);
+  session.getAgentPayloadById = getAgentPayloadById;
+
+  await session.handleMessage({
+    type: "fetch_agent_request",
+    requestId: "req-duplicate-mcp",
+    agentId: agent.id,
+    mcpServer: "router",
+  });
+
+  expect(getAgentPayloadById).not.toHaveBeenCalled();
+  expect(emitted).toEqual([
+    {
+      type: "fetch_agent_response",
+      payload: {
+        requestId: "req-duplicate-mcp",
+        agent: null,
+        project: null,
+        error:
+          "Agent ID has multiple saved records; MCP inspection requires an unambiguous session",
       },
     },
   ]);

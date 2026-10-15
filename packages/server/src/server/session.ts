@@ -7579,6 +7579,20 @@ export class Session {
       return;
     }
 
+    if (mcpServer && (await this.agentStorage.hasDuplicateRecordPaths(resolved.agentId))) {
+      this.emit({
+        type: "fetch_agent_response",
+        payload: {
+          requestId,
+          agent: null,
+          project: null,
+          error:
+            "Agent ID has multiple saved records; MCP inspection requires an unambiguous session",
+        },
+      });
+      return;
+    }
+
     const agent = await this.getAgentPayloadById(resolved.agentId);
     if (!agent) {
       this.emit({
