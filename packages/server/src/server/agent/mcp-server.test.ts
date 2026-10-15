@@ -1037,11 +1037,14 @@ describe("browser MCP tools", () => {
       providerSnapshotManager:
         new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
       browserToolsEnabled: true,
-      browserToolsBroker: new FakeBrowserToolsBroker({
-        requestId: "req-browser-only",
-        ok: true,
-        result: { command: "list_tabs", tabs: [] },
-      }) as BrowserToolsBroker,
+      browserToolsBroker: Object.assign(
+        new FakeBrowserToolsBroker({
+          requestId: "req-browser-only",
+          ok: true,
+          result: { command: "list_tabs", tabs: [] },
+        }),
+        { requiresPassport: true },
+      ) as BrowserToolsBroker,
       callerAgentId: "agent-1",
       paseoToolPolicy: { enabled: false, browserToolsEnabled: true },
       logger,
@@ -1056,6 +1059,26 @@ describe("browser MCP tools", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("keeps browser-only tools unavailable without a required paired passport", async () => {
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      browserToolsEnabled: true,
+      browserToolsBroker: new FakeBrowserToolsBroker({
+        requestId: "req-unpaired",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      }) as BrowserToolsBroker,
+      callerAgentId: "agent-1",
+      paseoToolPolicy: { enabled: false, browserToolsEnabled: true },
+      logger,
+    });
+    expect(lookupTool(server, "browser_list_tabs")).toBeUndefined();
+    expect(lookupTool(server, "create_agent")).toBeUndefined();
   });
 
   it("filters policy-disabled tools from MCP listing and calls", async () => {

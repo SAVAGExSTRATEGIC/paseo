@@ -601,6 +601,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     if (!isPaseoToolEnabled(options.paseoToolPolicy, name)) {
       return;
     }
+    if (
+      name.startsWith("browser_") &&
+      options.paseoToolPolicy?.enabled === false &&
+      options.paseoToolPolicy.browserToolsEnabled === true &&
+      options.browserToolsBroker?.requiresPassport !== true
+    ) {
+      return;
+    }
     tools.set(name, {
       name,
       title: config.title,
