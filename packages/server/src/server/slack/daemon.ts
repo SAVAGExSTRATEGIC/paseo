@@ -125,6 +125,7 @@ export class SlackDaemon {
       idempotencyKey: stableOperationId("create", intake.conversationKey),
       cwd: target.cwd,
       config: this.config.agentConfig,
+      env: { PASEO_SLACK_NATIVE_PERMISSIONS: "paseo-slack-v1" },
       title: `Slack ${intake.channelId} / ${intake.rootTs}`,
       labels: {
         slackOwner: intake.userId,
