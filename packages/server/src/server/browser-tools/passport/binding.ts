@@ -21,6 +21,29 @@ export type BrowserPassportStartup =
   | { required: true; state: "awaiting_pairing" }
   | { required: true; state: "paired"; verifier: BrowserPassportVerifier };
 
+export function readBrowserPassportBindingAtStartup(options: {
+  paseoHome: string;
+  expectedHost?: string;
+  expectedChromePath?: string;
+  expectedProfileDirectory?: string;
+}): BrowserPassportBinding | null {
+  try {
+    const filePath = path.join(options.paseoHome, "browser-passport.json");
+    const raw = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+    const binding = BrowserPassportBindingFileSchema.parse(raw);
+    if (
+      binding.host !== (options.expectedHost ?? hostname()) ||
+      binding.chromePath !== (options.expectedChromePath ?? "/Applications/Google Chrome.app") ||
+      binding.profileDirectory !== (options.expectedProfileDirectory ?? "Profile 3")
+    ) {
+      return null;
+    }
+    return binding;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A required but unavailable passport never falls through to generic browser hosts.
  * The file holds a public key only; the private signing key stays in Chrome's profile.
@@ -34,22 +57,8 @@ export function loadBrowserPassportAtStartup(options: {
 }): BrowserPassportStartup {
   if (!options.required) return { required: false, state: "unrestricted" };
 
-  let parsed: BrowserPassportBinding;
-  try {
-    const filePath = path.join(options.paseoHome, "browser-passport.json");
-    const raw = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
-    const binding = BrowserPassportBindingFileSchema.parse(raw);
-    if (
-      binding.host !== (options.expectedHost ?? hostname()) ||
-      binding.chromePath !== (options.expectedChromePath ?? "/Applications/Google Chrome.app") ||
-      binding.profileDirectory !== (options.expectedProfileDirectory ?? "Profile 3")
-    ) {
-      return { required: true, state: "awaiting_pairing" };
-    }
-    parsed = binding;
-  } catch {
-    return { required: true, state: "awaiting_pairing" };
-  }
+  const parsed = readBrowserPassportBindingAtStartup(options);
+  if (!parsed) return { required: true, state: "awaiting_pairing" };
 
   try {
     return {

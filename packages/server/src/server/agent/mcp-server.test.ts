@@ -1030,6 +1030,34 @@ describe("browser MCP tools", () => {
     expect(lookupTool(server, "browser_snapshot")).toBeDefined();
   });
 
+  it("exposes only browser tools for an explicitly browser-only provider", async () => {
+    const server = await createAgentMcpServer({
+      agentManager: new BoundaryAgentManagerFake() as AgentManager,
+      agentStorage: new BoundaryAgentStorageFake() as AgentStorage,
+      providerSnapshotManager:
+        new BoundaryProviderSnapshotManagerFake() as unknown as ProviderSnapshotManager,
+      browserToolsEnabled: true,
+      browserToolsBroker: new FakeBrowserToolsBroker({
+        requestId: "req-browser-only",
+        ok: true,
+        result: { command: "list_tabs", tabs: [] },
+      }) as BrowserToolsBroker,
+      callerAgentId: "agent-1",
+      paseoToolPolicy: { enabled: false, browserToolsEnabled: true },
+      logger,
+    });
+    const client = await connectInMemoryMcpClient(server);
+    try {
+      const names = (await client.listTools()).tools.map((tool) => tool.name);
+      expect(names).toContain("browser_list_tabs");
+      expect(names).not.toContain("create_agent");
+      expect(names).not.toContain("list_agents");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("filters policy-disabled tools from MCP listing and calls", async () => {
     const agentManager = new BoundaryAgentManagerFake();
     const agentStorage = new BoundaryAgentStorageFake();

@@ -1,0 +1,9 @@
+# Paseo Browser Passport
+
+This extension is a source candidate for Chrome Profile 3 (BOTS ONLY). It is not installed by building Paseo. Its private P-256 key is generated inside the Chrome profile and remains nonextractable. The options page displays the public key and extension origin for an operator to verify in the intended profile before creating `browser-passport.json` under the selected Paseo home.
+
+The daemon must start with `PASEO_BROWSER_PASSPORT_REQUIRED=1` to reject unpaired browser hosts. The binding file must contain the current host name, `/Applications/Google Chrome.app`, `Profile 3`, the exact `chrome-extension://<id>/` origin, and the extension's public SPKI key in base64. The extension must be disabled in all other Chrome profiles. Neither a profile label nor an opaque browser connection ID proves this pairing.
+
+Chrome native messaging requires a user-level manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/io.paseo.browser_passport.json`. `createBrowserHostInstallPlan` in the CLI source generates its exact manifest and per-home wrapper content from the verified public binding; it does not write either file. The wrapper points to the bundled `paseo-browser-host` executable and sets the selected `PASEO_HOME` because Chrome does not inherit Paseo's launch environment. Install, extension enablement, daemon opt-in, and release commissioning require their own admission and live readback.
+
+The extension advertises only `list_tabs`, `new_tab`, `navigate`, `reload`, and `close_tab`. It refuses incognito tabs, opens new tabs inactive in an existing normal window, and limits navigation to HTTP(S). The daemon rejects unknown or stale browser IDs. Other Paseo browser commands remain unavailable through this host. On native connection loss, the extension clears its tab IDs and schedules a reconnect attempt after one minute; the daemon requires a fresh signed challenge.

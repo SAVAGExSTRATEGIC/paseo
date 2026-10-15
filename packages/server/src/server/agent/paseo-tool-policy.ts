@@ -21,9 +21,15 @@ export function isPaseoToolEnabled(
   if (!isPaseoToolPolicyEnabled(policy)) {
     return false;
   }
+  if (policy?.enabled === false && !toolName.startsWith("browser_")) {
+    return false;
+  }
+  if (toolName.startsWith("browser_") && policy?.browserToolsEnabled === false) {
+    return false;
+  }
   return !policy?.disabledTools?.includes(toolName);
 }
 
 export function isPaseoToolPolicyEnabled(policy: ProviderPaseoToolsPolicy | undefined): boolean {
-  return policy?.enabled !== false;
+  return policy?.enabled !== false || policy.browserToolsEnabled === true;
 }

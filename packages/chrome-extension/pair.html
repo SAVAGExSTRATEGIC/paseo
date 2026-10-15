@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paseo Browser Passport pairing</title>
+    <style>
+      body {
+        font:
+          16px system-ui,
+          sans-serif;
+        max-width: 48rem;
+        margin: 3rem auto;
+        padding: 0 1rem;
+      }
+      code,
+      pre {
+        overflow-wrap: anywhere;
+      }
+      pre {
+        white-space: pre-wrap;
+        background: #f3f4f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+      }
+      p {
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Paseo Browser Passport</h1>
+    <p>
+      Open this page only in the approved BOTS ONLY Chrome profile. Pairing requires a separate
+      operator check of the Chrome profile and the Paseo host.
+    </p>
+    <p>Extension origin: <code id="origin">Loading…</code></p>
+    <p>Public key fingerprint: <code id="fingerprint">Loading…</code></p>
+    <details>
+      <summary>Public pairing data</summary>
+      <pre id="public-key">Loading…</pre>
+    </details>
+    <p id="status" role="status"></p>
+    <script type="module" src="pair.js"></script>
+  </body>
+</html>
