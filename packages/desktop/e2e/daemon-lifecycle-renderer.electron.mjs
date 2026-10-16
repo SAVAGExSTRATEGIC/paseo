@@ -8,6 +8,14 @@ import net from "node:net";
 import { _electron as electron, expect } from "playwright/test";
 import { readDaemonInstance } from "@getpaseo/server/daemon-control";
 
+function stopMetroProcessGroup(child) {
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
+
 // Run under the test's private Xvfb display; native dialog input never targets
 // a user's desktop. All daemon operations still cross the real preload/IPC.
 export async function verifyAttachedDaemonControls({ repo, root, env, home, port, instance }) {
@@ -163,11 +171,7 @@ export async function verifyAttachedDaemonControls({ repo, root, env, home, port
     }
     if (metro.exitCode === null && metro.signalCode === null) {
       const exited = waitForChildExit(metro);
-      try {
-        process.kill(-metro.pid, "SIGTERM");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
-      }
+      stopMetroProcessGroup(metro);
       await exited;
     }
   }
