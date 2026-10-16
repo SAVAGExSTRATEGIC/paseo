@@ -139,6 +139,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.20.0
+      - name: Use job-local Playwright browser storage
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/playwright-browsers"
+          printf 'PLAYWRIGHT_BROWSERS_PATH=%s/playwright-browsers\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Install dependencies
         if: ${{ !startsWith(inputs.check, 'nix-') && inputs.check != 'docker-build' }}
         run: node scripts/npm-retry.mjs ci
