@@ -444,6 +444,7 @@ it("recovers a real SDK network disconnect with retained work and one native dis
     true,
   );
   const controller = new AbortController();
+  expect(host.ready).toBe(true);
   const runner = new ConversationRunner({
     config,
     store,
@@ -474,8 +475,10 @@ it("recovers a real SDK network disconnect with retained work and one native dis
       { timeout: 15_000 },
     )
     .toBe(true);
+  expect(host.ready).toBe(false);
   allowReconnect();
   await host.connect();
+  expect(host.ready).toBe(true);
   await expect.poll(() => store.pending().length, { timeout: 15_000 }).toBe(0);
   expect(connections.length).toBeGreaterThan(1);
   expect(turns).toEqual(["respond with exactly: reconnect-once"]);

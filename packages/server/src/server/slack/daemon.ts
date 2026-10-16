@@ -96,6 +96,14 @@ export class SlackDaemon {
     this.api = createPaseoApi(this.driver);
   }
 
+  get ready(): boolean {
+    return (
+      this.driver.isConnected &&
+      this.authenticatedInfo !== null &&
+      this.authenticatedInfo === this.driver.getLastServerInfoMessage()
+    );
+  }
+
   async connect(): Promise<void> {
     await this.driver.connect();
     this.requireIdentity(false);

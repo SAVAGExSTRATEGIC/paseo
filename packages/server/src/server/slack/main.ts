@@ -92,7 +92,12 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
       pendingDeliveries: store.deliveries().length,
       needsAttention: 0,
     };
-    closeHealth = (await serveHealth(config.healthPort, () => ({ ...health }))).close;
+    closeHealth = (
+      await serveHealth(config.healthPort, () => ({
+        ...health,
+        hostsReady: health.hostsReady && [...hosts.values()].every((host) => host.ready),
+      }))
+    ).close;
     const failures = new Map<string, number>();
     const failure = (code: string, identity = "bridge") => {
       const correlation = stableOperationId("correlation", identity);
@@ -124,6 +129,10 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
     let nextMaintenance = Date.now() + 60 * 60_000;
     log("bridge_started", release);
     while (!controller.signal.aborted) {
+      if (health.hostsReady && [...hosts.values()].some((host) => !host.ready)) {
+        health.hostsReady = false;
+        log("paseo_unavailable");
+      }
       if (!hostsCheck && Date.now() >= nextCheck) {
         hostsCheck = checkHosts(config, hosts)
           .then((ready) => {
