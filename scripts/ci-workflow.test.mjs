@@ -536,3 +536,27 @@ test("Nix hash validation cannot write main or require publishing credentials", 
   assert.match(source, /git diff --exit-code -- package-lock\.json nix\/npm-deps\.hash/);
   assert.doesNotMatch(source, /secrets\.|create-github-app-token|git push|contents: write/);
 });
+
+for (const check of ["nix-linux", "nix-hash", "nix-macos", "docker-build"]) {
+  test(`packaging source gate admits fixed ${check} command`, async () => {
+    const fixture = tartSourceFixture();
+    fixture.env.SOURCE_CHECK = check;
+    await runTartSourceGate(fixture);
+  });
+}
+
+test("packaging jobs preserve native Mac coverage and cannot publish or upload build records", () => {
+  const source = readFileSync(tartWorkflowPath, "utf8");
+  assert.match(source, /inputs.check != 'nix-macos' && 'Linux'/);
+  assert.match(source, /platforms: linux\/amd64,linux\/arm64/);
+  assert.match(source, /DOCKER_BUILD_RECORD_UPLOAD: "false"/);
+  assert.match(source, /push: false/);
+  assert.doesNotMatch(
+    source,
+    /packages: write|cache-to:|cache-from:|uses: actions\/upload-artifact/,
+  );
+  const script = readFileSync(new URL("scripts/local-tart-check.sh", repoRoot), "utf8");
+  assert.match(script, /nix-macos\)[\s\S]*CFBundleIdentifier/);
+  assert.match(script, /nix-linux\)[\s\S]*connectedDaemon/);
+  assert.match(script, /nix-hash\)[\s\S]*git diff --exit-code/);
+});

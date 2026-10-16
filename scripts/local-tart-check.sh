@@ -243,5 +243,82 @@ case "${1:-}" in
     npm run test:unit --workspace=@getpaseo/cli
     printf '::endgroup::\n'
     ;;
+  nix-linux)
+    export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+    ./scripts/update-nix.sh --check
+    nix build .#default -o result
+    (
+      set -euo pipefail
+
+      export PASEO_HOME
+      PASEO_HOME="$(mktemp -d)"
+      export PASEO_LISTEN=127.0.0.1:6767
+
+      WRAPPER_LOG="$PASEO_HOME/paseo-server-wrapper.log"
+
+      cleanup() {
+        if [[ -n "${DAEMON_PID:-}" ]] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+          kill "$DAEMON_PID"
+          wait "$DAEMON_PID" || true
+        fi
+        rm -rf "$PASEO_HOME"
+      }
+      trap cleanup EXIT
+
+      PASEO_WEB_UI_ENABLED=true ./result/bin/paseo-server --no-relay >"$WRAPPER_LOG" 2>&1 &
+      DAEMON_PID=$!
+
+      deadline=$((SECONDS + 30))
+      while (( SECONDS < deadline )); do
+        if STATUS_JSON="$(./result/bin/paseo daemon status --json)" \
+          && jq -e '.connectedDaemon == "reachable"' <<<"$STATUS_JSON" >/dev/null; then
+          echo "$STATUS_JSON"
+          curl --fail --silent --show-error http://127.0.0.1:6767/ >"$PASEO_HOME/web-ui.html"
+          [[ -s "$PASEO_HOME/web-ui.html" ]]
+          exit 0
+        fi
+
+        if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+          echo "Nix daemon exited before becoming reachable."
+          break
+        fi
+
+        sleep 1
+      done
+
+      echo "::group::daemon.log"
+      cat "$PASEO_HOME/daemon.log" 2>/dev/null || echo "<missing>"
+      echo "::endgroup::"
+
+      echo "::group::paseo-server stdout/stderr"
+      cat "$WRAPPER_LOG" 2>/dev/null || echo "<missing>"
+      echo "::endgroup::"
+
+      echo "::group::paseo daemon status"
+      ./result/bin/paseo daemon status || true
+      echo "::endgroup::"
+
+      exit 1
+
+    )
+    nix build .#desktop -o result-desktop
+    ;;
+  nix-hash)
+    export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+    ./scripts/update-nix.sh --check
+    git diff --exit-code -- package-lock.json nix/npm-deps.hash
+    nix build .#default -o result
+    ;;
+  nix-macos)
+    export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+    nix build .#desktop -o result-desktop
+    set -euo pipefail
+
+    app="result-desktop/Applications/Paseo.app"
+    test -x "$app/Contents/MacOS/Paseo"
+    test -L result-desktop/bin/paseo-desktop
+    test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = "sh.paseo.desktop"
+    find "$app" -name Info.plist -print0 | xargs -0 -n 1 plutil -lint
+    ;;
   *) printf "Unknown fixed CI check\n" >&2; exit 2 ;;
 esac

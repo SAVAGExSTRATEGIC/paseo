@@ -52,8 +52,8 @@ jobs:
       labels:
         - self-hosted
         - ARM64
-        - ${{ inputs.check && inputs.check != 'file-observation' && 'Linux' || 'macOS' }}
-        - ${{ inputs.check && inputs.check != 'file-observation' && 'paseo-isolated-linux' || 'paseo-isolated-macos' }}
+        - ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'nix-macos' && 'Linux' || 'macOS' }}
+        - ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'nix-macos' && 'paseo-isolated-linux' || 'paseo-isolated-macos' }}
     outputs:
       tested-head: ${{ steps.source.outputs.head }}
     steps:
@@ -76,7 +76,7 @@ jobs:
           const repositoryId = 1382441324;
           const workflow = `${repo}/.github/workflows/local-tart-ci.yml@refs/heads/main`;
           const env = process.env;
-          const checks = ["file-observation", "format", "lint", "typecheck", "server-tests-ubuntu", "desktop-tests-ubuntu", "app-tests", "sdk-tests", "playwright-1", "playwright-2", "playwright-3", "playwright-4", "relay-tests", "cli-tests-1", "cli-tests-2", "cli-tests-3"];
+          const checks = ["file-observation", "format", "lint", "typecheck", "server-tests-ubuntu", "desktop-tests-ubuntu", "app-tests", "sdk-tests", "playwright-1", "playwright-2", "playwright-3", "playwright-4", "relay-tests", "cli-tests-1", "cli-tests-2", "cli-tests-3", "nix-linux", "nix-hash", "nix-macos", "docker-build"];
           if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
               env.JOB_WORKFLOW_REF !== workflow || !/^[0-9a-f]{40}$/.test(env.JOB_WORKFLOW_SHA) ||
               !['workflow_dispatch', 'push', 'pull_request_target', 'pull_request', 'merge_group'].includes(env.GITHUB_EVENT_NAME) ||
@@ -145,6 +145,7 @@ jobs:
         with:
           node-version: 22.20.0
       - name: Install dependencies
+        if: ${{ !startsWith(inputs.check, 'nix-') && inputs.check != 'docker-build' }}
         run: node scripts/npm-retry.mjs ci
       - name: Build server dependencies
         if: ${{ !inputs.check || inputs.check == 'file-observation' }}
@@ -157,24 +158,49 @@ jobs:
             src/server/workspace-git-service.observation.test.ts \
             src/server/workspace-git-service.observation.integration.test.ts \
             --bail=1
-      - name: Run selected Linux check
-        if: ${{ inputs.check && inputs.check != 'file-observation' }}
+      - name: Install pinned Nix inside disposable Linux guest
+        if: ${{ inputs.check == 'nix-linux' || inputs.check == 'nix-hash' }}
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.9/install
+          enable_kvm: false
+          set_as_trusted_user: false
+          extra_nix_config: |
+            max-jobs = 2
+            cores = 2
+      - name: Enable cross-architecture Docker builds inside Linux guest
+        if: ${{ inputs.check == 'docker-build' }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+        with:
+          cache-image: false
+      - name: Set up disposable Docker builder
+        if: ${{ inputs.check == 'docker-build' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          cache-binary: false
+      - name: Read package version
+        id: package
+        if: ${{ inputs.check == 'docker-build' }}
+        shell: bash
+        run: node -e 'const v=require("./package.json").version;if(!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(v))throw Error("Invalid package version");require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT,"version="+v+"\n");'
+      - name: Build both Docker architectures without publishing or remote caches
+        if: ${{ inputs.check == 'docker-build' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: .
+          file: docker/base/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: PASEO_VERSION=${{ steps.package.outputs.version }}
+          push: false
+          provenance: false
+      - name: Run selected guest check
+        if: ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'docker-build' }}
         shell: bash
         env:
           SOURCE_CHECK: ${{ inputs.check }}
         run: /bin/bash "$RUNNER_TEMP/paseo-tart-check.sh" "$SOURCE_CHECK"
-      - name: Upload failure diagnostics
-        if: ${{ failure() && inputs.check && inputs.check != 'file-observation' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: tart-${{ inputs.check }}-${{ github.run_attempt }}
-          path: |
-            packages/app/test-results/
-            packages/app/playwright-report/
-            ${{ runner.temp }}/desktop-lifecycle/
-            ${{ runner.temp }}/desktop-browser-e2e/
-          if-no-files-found: ignore
-          retention-days: 7
     timeout-minutes: 90
 
   report-pr:
