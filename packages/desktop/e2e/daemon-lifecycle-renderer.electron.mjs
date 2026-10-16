@@ -2,7 +2,6 @@ import { waitForChildExit } from "./child-exit.mjs";
 import { openSync, closeSync } from "node:fs";
 import { warmMetro } from "../../app/e2e/support/metro-warmup.mjs";
 import { spawn, execFileSync } from "node:child_process";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
@@ -162,9 +161,13 @@ export async function verifyAttachedDaemonControls({ repo, root, env, home, port
       await desktop.evaluate(({ app }) => app.exit(0)).catch(() => {});
       await exited;
     }
-    if (metro.exitCode === null) {
-      const exited = once(metro, "exit");
-      process.kill(-metro.pid, "SIGTERM");
+    if (metro.exitCode === null && metro.signalCode === null) {
+      const exited = waitForChildExit(metro);
+      try {
+        process.kill(-metro.pid, "SIGTERM");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
       await exited;
     }
   }
