@@ -6328,7 +6328,9 @@ describe("Codex importable sessions", () => {
     const requests: string[] = [];
     const provider = new CodexAppServerAgentClient(
       createTestLogger(),
-      { command: [process.execPath, "-e", "process.stdin.resume()"] },
+      {
+        command: { mode: "replace", argv: [process.execPath, "-e", "process.stdin.resume()"] },
+      },
       {
         _createCodexClient: (child) => ({
           async request(method, params) {

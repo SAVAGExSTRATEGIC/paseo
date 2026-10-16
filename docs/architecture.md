@@ -189,6 +189,8 @@ See [SECURITY.md](../SECURITY.md) for the full threat model.
 The optional Hub relationship is daemon-outbound and does not use the relay. Its connection,
 authorization, ownership, persistence, and lifecycle contract is documented in [hub.md](hub.md).
 
+The independent internal Slack SDK bridge has a separate process and journal; its operator contract is in [slack-bridge.md](slack-bridge.md).
+
 ### `packages/desktop` — Desktop app (Electron)
 
 Electron wrapper for macOS, Linux, and Windows.
