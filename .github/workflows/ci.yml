@@ -17,10 +17,14 @@ env:
   # postinstall download from NuGet is large enough to make npm ci flaky.
   ONNXRUNTIME_NODE_INSTALL: skip
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: read
       pull-requests: read
@@ -58,86 +62,48 @@ jobs:
     name: format
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.format != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Check formatting
-        run: npm run format:check
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: format
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   lint:
     name: lint
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Lint lockfile
-        run: npx --yes lockfile-lint --path package-lock.json --type npm --allowed-hosts npm --validate-https --validate-integrity
-
-      - name: Verify dependency signatures
-        run: npm audit signatures
-
-      - name: Lint
-        run: npm run lint
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: lint
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   typecheck:
     name: typecheck
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Build server stack
-        run: npm run build:server
-
-      - name: Typecheck all packages
-        run: npm run typecheck
-
-      - name: Install website test browsers
-        run: npx playwright install --with-deps chromium webkit
-
-      - name: Verify website mockups
-        run: npm run test:e2e --workspace=@getpaseo/website
-
-      - name: Verify public package contents
-        run: |
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/protocol
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/client
-          npm pack --dry-run --ignore-scripts --workspace=@getpaseo/server
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: typecheck
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   server-tests-ubuntu:
     name: server-tests (ubuntu-latest)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') }}
-    runs-on: ubuntu-latest
-    steps: &server_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: server-tests-ubuntu
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
+
+  server-tests-windows:
+    name: server-tests (windows-latest)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') }}
+    runs-on: windows-latest
+    steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -164,21 +130,10 @@ jobs:
       - name: Run server tests
         if: ${{ needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' }}
         run: npm run test --workspace=@getpaseo/server
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Run Hub CLI/daemon contract
         if: ${{ needs.changes.outputs.full == 'false' && needs.changes.outputs.server == 'false' && needs.changes.outputs.hub != 'false' }}
         run: npm run test:hub-cli-contract --workspace=@getpaseo/server
-
-  server-tests-windows:
-    name: server-tests (windows-latest)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') }}
-    runs-on: windows-latest
-    steps: *server_test_steps
 
   # native-recursive.ts serves darwin and win32, but windows-latest above is the only
   # runner that exercises it. macOS — the platform the reported watcher bug was on —
@@ -188,38 +143,31 @@ jobs:
     name: server-tests (macos-14, file observation)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Build server dependencies
-        run: npm run build:server-deps
-
-      - name: Run file observation tests
-        run: |
-          npm run test:unit --workspace=@getpaseo/server -- \
-            src/server/file-observer \
-            src/server/workspace-git-service.observation.test.ts \
-            src/server/workspace-git-service.observation.integration.test.ts \
-            --bail=1
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: file-observation
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   desktop-tests-ubuntu:
     name: desktop-tests (ubuntu-latest)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
-    runs-on: ubuntu-24.04
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: desktop-tests-ubuntu
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
+
+  desktop-tests-windows:
+    name: desktop-tests (windows-latest)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
+    runs-on: windows-latest
     timeout-minutes: 30
     permissions:
       contents: read
-    steps: &desktop_test_steps
+    steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -286,238 +234,157 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  desktop-tests-windows:
-    name: desktop-tests (windows-latest)
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
-    runs-on: windows-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps: *desktop_test_steps
-
   app-tests:
     name: app-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.app != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Install Playwright browsers
-        timeout-minutes: 10
-        run: npx playwright install chromium
-
-      - name: Build app dependencies
-        run: npm run build:app-deps
-
-      - name: Run app unit tests
-        run: npm run test --workspace=@getpaseo/app
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: app-tests
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   sdk-tests:
     name: sdk-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.sdk != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Build client dependencies
-        run: npm run build:relay && npm run build:client
-
-      - name: Build plugin SDK
-        run: npm run build:plugin
-
-      - name: Run plugin SDK tests
-        run: npm run test --workspace=@getpaseo/plugin
-
-      - name: Run protocol tests
-        run: npm run test --workspace=@getpaseo/protocol
-
-      - name: Run client tests
-        run: npm run test --workspace=@getpaseo/client
-
-      - name: Run highlight tests
-        run: npm run test --workspace=@getpaseo/highlight
-
-      - name: Typecheck client examples
-        run: npm run typecheck:examples --workspace=@getpaseo/client
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: sdk-tests
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   playwright-1:
     name: playwright (shard 1/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_SHARD: "1/4"
-      PLAYWRIGHT_ARTIFACT: "1"
-    steps: &playwright_test_steps
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies with retry
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Install Playwright browsers
-        timeout-minutes: 10
-        run: npx playwright install chromium
-
-      - name: Build server stack
-        run: npm run build:server
-
-      - name: Build native app dependency
-        run: npm run build --workspace=@getpaseo/expo-two-way-audio
-
-      - name: Install agent CLIs for provider tests
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
-
-      - name: Run Playwright E2E tests
-        run: npm run test:e2e --workspace=@getpaseo/app -- --shard=${{ env.PLAYWRIGHT_SHARD }}
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # Weight file groups by observed duration; raw test counts overload
-          # early agent/Changes specs. Required check names remain unchanged.
-          PWTEST_SHARD_WEIGHTS: "111:172:137:160"
-
-      - name: Upload test artifacts
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-results-${{ env.PLAYWRIGHT_ARTIFACT }}
-          path: |
-            packages/app/test-results/
-            packages/app/playwright-report/
-          retention-days: 7
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: playwright-1
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   playwright-2:
     name: playwright (shard 2/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_SHARD: "2/4"
-      PLAYWRIGHT_ARTIFACT: "2"
-    steps: *playwright_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: playwright-2
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   playwright-3:
     name: playwright (shard 3/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_SHARD: "3/4"
-      PLAYWRIGHT_ARTIFACT: "3"
-    steps: *playwright_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: playwright-3
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   playwright-4:
     name: playwright (shard 4/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_SHARD: "4/4"
-      PLAYWRIGHT_ARTIFACT: "4"
-    steps: *playwright_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: playwright-4
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   relay-tests:
     name: relay-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.relay != 'false') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Build relay
-        run: npm run build:relay
-
-      - name: Run relay tests
-        run: npm run test --workspace=@getpaseo/relay
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: relay-tests
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   cli-tests-1:
     name: cli-tests (shard 1/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
-      PASEO_DICTATION_ENABLED: "0"
-      PASEO_VOICE_MODE_ENABLED: "0"
-      PASEO_CLI_TEST_SHARD: "1"
-      PASEO_CLI_TEST_SHARD_TOTAL: "3"
-    steps: &cli_test_steps
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: node scripts/npm-retry.mjs ci
-
-      - name: Install agent CLIs for provider tests
-        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code @openai/codex@0.105.0 opencode-ai
-
-      # The local runner builds its dependencies and shards its own E2E files.
-      - name: Run CLI E2E tests
-        run: npm run test:local --workspace=@getpaseo/cli
-
-      # Source tests do not read PASEO_CLI_TEST_SHARD. Run them once, on the
-      # shortest E2E shard, after its runner has built the server stack.
-      - name: Run CLI source tests
-        if: ${{ env.PASEO_CLI_TEST_SHARD == '3' }}
-        run: npm run test:unit --workspace=@getpaseo/cli
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: cli-tests-1
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   cli-tests-2:
     name: cli-tests (shard 2/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
-      PASEO_DICTATION_ENABLED: "0"
-      PASEO_VOICE_MODE_ENABLED: "0"
-      PASEO_CLI_TEST_SHARD: "2"
-      PASEO_CLI_TEST_SHARD_TOTAL: "3"
-    steps: *cli_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: cli-tests-2
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
 
   cli-tests-3:
     name: cli-tests (shard 3/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
-    env:
-      PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
-      PASEO_DICTATION_ENABLED: "0"
-      PASEO_VOICE_MODE_ENABLED: "0"
-      PASEO_CLI_TEST_SHARD: "3"
-      PASEO_CLI_TEST_SHARD_TOTAL: "3"
-    steps: *cli_test_steps
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      check: cli-tests-3
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
+
+  ci-result:
+    name: CI result
+    # A short result-only job must report failure even when a dependency fails or is cancelled.
+    if: ${{ always() }}
+    needs:
+      - changes
+      - format
+      - lint
+      - typecheck
+      - server-tests-ubuntu
+      - server-tests-windows
+      - server-tests-macos
+      - desktop-tests-ubuntu
+      - desktop-tests-windows
+      - app-tests
+      - sdk-tests
+      - playwright-1
+      - playwright-2
+      - playwright-3
+      - playwright-4
+      - relay-tests
+      - cli-tests-1
+      - cli-tests-2
+      - cli-tests-3
+    runs-on: windows-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every affected check to succeed
+        shell: bash
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module <<'CI_RESULT_GATE'
+          const needs = JSON.parse(process.env.CI_NEEDS);
+          const contracts = {"format":["format"],"lint":["quality"],"typecheck":["quality"],"server-tests-ubuntu":["server","hub"],"server-tests-windows":["server","hub"],"server-tests-macos":["server"],"desktop-tests-ubuntu":["desktop"],"desktop-tests-windows":["desktop"],"app-tests":["app"],"sdk-tests":["sdk"],"playwright-1":["browser"],"playwright-2":["browser"],"playwright-3":["browser"],"playwright-4":["browser"],"relay-tests":["relay"],"cli-tests-1":["cli"],"cli-tests-2":["cli"],"cli-tests-3":["cli"]};
+          const expected = ['changes', ...Object.keys(contracts)];
+          if (Object.keys(needs).length !== expected.length || expected.some(name => !needs[name])) {
+            throw new Error('Incomplete CI result inventory');
+          }
+          if (needs.changes.result !== 'success') throw new Error('CI change detection did not succeed');
+          const outputs = needs.changes.outputs;
+          const flags = ['full', ...new Set(Object.values(contracts).flat())];
+          if (!outputs || flags.some(flag => !['true', 'false'].includes(outputs[flag]))) {
+            throw new Error('Missing or invalid CI change flags');
+          }
+          for (const [name, areas] of Object.entries(contracts)) {
+            const required = outputs.full === 'true' || areas.some(area => outputs[area] === 'true');
+            const result = needs[name].result;
+            if (result !== 'success' && (required || result !== 'skipped')) {
+              throw new Error(`CI check ${name} did not succeed (${result})`);
+            }
+          }
+          CI_RESULT_GATE

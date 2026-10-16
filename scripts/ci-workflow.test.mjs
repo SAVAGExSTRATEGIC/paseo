@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = new URL("../", import.meta.url);
 const ciWorkflowPath = new URL(".github/workflows/ci.yml", repoRoot);
@@ -87,7 +88,7 @@ async function runTartSourceGate(fixture) {
 test("Tart reusable lane is read-only, gated, scoped to its own group, and checks source before checkout", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
   assert.match(source, /workflow_dispatch:/);
-  assert.match(source, /workflow_call:/);
+  assert.match(source, /^ {2}workflow_call:\s*$/m);
   assert.doesNotMatch(source, /^ {2}(push|pull_request_target):\s*$/m);
   assert.doesNotMatch(source, /statuses: write|contents: write|report-pr:/);
   assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
@@ -191,7 +192,7 @@ function jobBlocks(source) {
   const jobs = new Map();
   let currentJob;
 
-  for (const line of source.split("\n")) {
+  for (const line of source.split("\njobs:\n").at(-1).split("\n")) {
     const jobMatch = /^  ([a-z0-9-]+):\s*$/.exec(line);
     if (jobMatch) {
       currentJob = jobMatch[1];
@@ -225,7 +226,7 @@ function filesUnder(relativeDirectory, predicate) {
   return readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) =>
-      [relativeDirectory, relativePath(directory.pathname, entry.parentPath), entry.name]
+      [relativeDirectory, relativePath(fileURLToPath(directory), entry.parentPath), entry.name]
         .filter(Boolean)
         .join("/")
         .replaceAll("\\", "/"),
@@ -256,13 +257,45 @@ test("gated checks are statically named jobs with real job-level gating", () => 
 
 test("change gating allows superseded workflow runs to cancel", () => {
   for (const workflowPath of [ciWorkflowPath, dockerWorkflowPath, nixWorkflowPath]) {
-    const source = readFileSync(workflowPath, "utf8");
+    const source = readFileSync(workflowPath, "utf8").split("\n  ci-result:")[0];
     assert.doesNotMatch(
       source,
       /\$\{\{\s*always\(\)/,
       "always() keeps jobs alive after concurrency cancellation; use !cancelled() for fail-open gating",
     );
   }
+});
+
+test("compatible CI checks call trusted main while Windows checks retain native coverage", () => {
+  const source = readFileSync(ciWorkflowPath, "utf8");
+  const jobs = jobBlocks(source);
+  const windows = new Set([
+    "changes",
+    "server-tests-windows",
+    "desktop-tests-windows",
+    "ci-result",
+  ]);
+  assert.equal(jobs.size, 20);
+  for (const [name, lines] of jobs) {
+    const job = lines.join("\n");
+    if (windows.has(name)) {
+      assert.match(job, /runs-on: windows-latest/);
+      assert.doesNotMatch(job, /uses: SAVAGExSTRATEGIC/);
+    } else {
+      assert.match(
+        job,
+        /uses: SAVAGExSTRATEGIC\/paseo\/\.github\/workflows\/local-tart-ci\.yml@main/,
+      );
+      assert.match(job, /expected_head: \$\{\{ github\.sha \}\}/);
+      const check = name === "server-tests-macos" ? "file-observation" : name;
+      assert.match(job, new RegExp(`^      check: ${check}$`, "m"));
+      assert.doesNotMatch(job, /runs-on:|steps:|secrets:/);
+    }
+  }
+  assert.doesNotMatch(
+    source,
+    /secrets\.(?:OPENAI_API_KEY|OPENROUTER_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)/,
+  );
 });
 
 test("focused contracts stay inside existing required checks", () => {
@@ -274,13 +307,21 @@ test("focused contracts stay inside existing required checks", () => {
   assert.match(changes, /scripts\/daemon-launch-contract\.test\.mjs/);
   assert.doesNotMatch(changes, /Install dependencies|npm run build/);
 
-  assert.match(server, /test:hub-cli-contract/);
-  assert.match(server, /npm run test --workspace=@getpaseo\/server/);
+  assert.match(server, /check: server-tests-ubuntu/);
+  const commands = readFileSync(new URL("scripts/local-tart-check.sh", repoRoot), "utf8");
+  assert.match(commands, /npm run test --workspace=@getpaseo\/server/);
+  const serverPackage = JSON.parse(
+    readFileSync(new URL("packages/server/package.json", repoRoot), "utf8"),
+  );
+  assert.match(serverPackage.scripts.test, /test:unit/);
+  assert.match(serverPackage.scripts["test:hub-cli-contract"], /hub-cli-contract\.test\.ts/);
+  assert.match(serverPackage.scripts["test:unit"], /vitest run/);
   assert.ok(!jobs.has("hub-cli-contract"));
 
-  assert.match(desktop, /test:e2e:renderer/);
-  assert.match(desktop, /test:e2e:browser-tabs/);
-  assert.match(desktop, /npm run test --workspace=@getpaseo\/desktop/);
+  assert.match(desktop, /check: desktop-tests-ubuntu/);
+  assert.match(commands, /test:e2e:renderer/);
+  assert.match(commands, /test:e2e:browser-tabs/);
+  assert.match(commands, /npm run test --workspace=@getpaseo\/desktop/);
   assert.ok(!jobs.has("desktop-browser-bridge"));
   assert.ok(!jobs.has("playwright-desktop"));
 });
@@ -306,7 +347,7 @@ test("PR routing declares stable behavior ownership", () => {
       "tsconfig.base.json",
       "vitest.config.ts",
     ],
-    ci: [".github/actions/**", ".github/workflows/ci.yml"],
+    ci: [".github/actions/**", ".github/workflows/ci.yml", ".github/workflows/local-tart-ci.yml"],
     format: [
       ".agents/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}",
       ".github/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}",
@@ -543,9 +584,14 @@ test("fixed Linux check commands retain each existing check without paid API sec
 test("Nix hash validation cannot write main or require publishing credentials", () => {
   const source = readFileSync(new URL(".github/workflows/nix-update-hash.yml", repoRoot), "utf8");
   assert.match(source, /contents: read/);
-  assert.match(source, /persist-credentials: false/);
-  assert.match(source, /update-nix\.sh --check/);
-  assert.match(source, /git diff --exit-code -- package-lock\.json nix\/npm-deps\.hash/);
+  assert.match(
+    source,
+    /uses: SAVAGExSTRATEGIC\/paseo\/\.github\/workflows\/local-tart-ci\.yml@main/,
+  );
+  assert.match(source, /check: nix-hash/);
+  const script = readFileSync(new URL("scripts/local-tart-check.sh", repoRoot), "utf8");
+  assert.match(script, /nix-hash\)[\s\S]*update-nix\.sh --check/);
+  assert.match(script, /git diff --exit-code -- package-lock\.json nix\/npm-deps\.hash/);
   assert.doesNotMatch(source, /secrets\.|create-github-app-token|git push|contents: write/);
 });
 
@@ -694,4 +740,82 @@ test("Electron cleanup handles a past crash and waits for a live child", async (
   child.emit("exit", 0, null);
   await waiting;
   assert.equal(done, true);
+});
+
+function ciResultFixture(full = "true") {
+  const outputs = { full };
+  for (const job of gatedCiJobs.values()) {
+    for (const flag of job.contracts ?? [job.contract]) outputs[flag] = full;
+  }
+  return {
+    changes: { result: "success", outputs },
+    ...Object.fromEntries(
+      [...gatedCiJobs.keys()].map((name) => [
+        name,
+        { result: full === "true" ? "success" : "skipped" },
+      ]),
+    ),
+  };
+}
+function runCIResult(needs) {
+  const source = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("ci-result").join("\n");
+  const code = source.split("<<'CI_RESULT_GATE'\n")[1].split("\n          CI_RESULT_GATE")[0];
+  return new Function("process", code)({
+    env: { CI_NEEDS: JSON.stringify(needs) },
+  });
+}
+test("stable merge result covers all jobs and admits only intentional path skips", () => {
+  const job = jobBlocks(readFileSync(ciWorkflowPath, "utf8")).get("ci-result").join("\n");
+  assert.match(job, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(job, /permissions: \{\}/);
+  assert.doesNotMatch(job, /checkout|secrets:|npm/);
+  for (const name of ["changes", ...gatedCiJobs.keys()])
+    assert.ok(job.includes(`      - ${name}\n`));
+  runCIResult(ciResultFixture());
+  runCIResult(ciResultFixture("false"));
+});
+for (const result of ["failure", "cancelled", "skipped", "unknown"]) {
+  test(`stable merge result refuses an affected check that is ${result}`, () => {
+    const needs = ciResultFixture();
+    needs["server-tests-windows"].result = result;
+    assert.throws(() => runCIResult(needs));
+  });
+}
+test("stable merge result fails closed on incomplete detection, inventory and unexpected failures", () => {
+  for (const mutate of [
+    (needs) => {
+      delete needs["format"];
+    },
+    (needs) => {
+      needs.changes.result = "failure";
+    },
+    (needs) => {
+      delete needs.changes.outputs.full;
+    },
+    (needs) => {
+      needs.changes.outputs.server = "invalid";
+    },
+    (needs) => {
+      needs["format"].result = "failure";
+    },
+    (needs) => {
+      needs.changes.outputs.server = "true";
+    },
+  ]) {
+    const needs = ciResultFixture("false");
+    mutate(needs);
+    assert.throws(() => runCIResult(needs));
+  }
+});
+
+test("merge result requires each platform check when any of its affected areas changes", () => {
+  for (const [name, job] of gatedCiJobs) {
+    for (const flag of job.contracts ?? [job.contract]) {
+      const needs = ciResultFixture("false");
+      for (const key of gatedCiJobs.keys()) needs[key].result = "success";
+      needs[name].result = "skipped";
+      needs.changes.outputs[flag] = "true";
+      assert.throws(() => runCIResult(needs), `${name} must run for ${flag}`);
+    }
+  }
 });

@@ -38,6 +38,7 @@ env:
 
 jobs:
   setup:
+    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.values.outputs.image }}
@@ -111,6 +112,16 @@ jobs:
           echo "Resolved image=${image} install_version=${install_version} publish=${publish}"
 
   build:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      expected_head: ${{ github.sha }}
+      check: docker-build
+
+  build-manual:
     needs: setup
     if: needs.setup.outputs.publish != 'true'
     runs-on: ubuntu-latest
