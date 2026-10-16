@@ -102,6 +102,7 @@ maintenance.js CONFIG backup
 maintenance.js CONFIG verify SNAPSHOT
 maintenance.js CONFIG restore SNAPSHOT
 maintenance.js CONFIG resume INTAKE_ID
+maintenance.js CONFIG resolve-canceled INTAKE_ID AGENT_ID processes-stopped
 maintenance.js CONFIG prune
 maintenance.js CONFIG forget CHANNEL_ID ROOT_THREAD_TS
 ```
@@ -111,6 +112,8 @@ maintenance.js CONFIG forget CHANNEL_ID ROOT_THREAD_TS
 To restore, verify the snapshot, preserve the damaged directory for inspection, and provision a fresh private state directory. Make a reviewed config copy pointing to that directory, then run `restore`. Existing journals are never overwritten. Confirm the restored binding and record identities before pointing the service at the recovered directory.
 
 Restored unfinished inputs are held, unsent replies require reconciliation, and old controls cannot approve work. Inspect each native session and receipt before using `resume INTAKE_ID` on a held prompt. Resume preserves the original creation/message identities and scans canonical history from the beginning; it does not issue a new task ID. Commands and controls are not replayed by maintenance. If the daemon cannot prove the original outcome, retain the hold and resolve it through Paseo and the operator.
+
+Some providers rebuild message identifiers after Reload agent even though their saved conversation remains. Do not resume or resend a canceled task whose receipt can no longer be matched. After verifying its native cancellation, exact agent identity, and that its command processes have stopped, stop the bridge and use `resolve-canceled INTAKE_ID AGENT_ID processes-stopped`. This command accepts only a held prompt with a previously recorded native canceled outcome and matching binding. It closes that intake and queues one explicit operator-verified cancellation notice, without contacting the provider or dispatching any work. Keep the process/identity evidence in the operator ledger. It refuses unknown outcomes, mismatched agents, live service locks, controls and repeat resolution. Restart the bridge and verify delivery before continuing the thread.
 
 Routine retention clears completed message/result content after 30 days and compacts completed records after 90 days. Bindings, minimal conversation origins and unresolved work remain. Messages older than the compaction boundary are rejected, preventing expired retries from executing again. `forget` refuses unfinished work, unsent deliveries and unresolved controls; after deletion the old thread stays closed to prevent replay. Start a new thread. Managed backups can retain deleted content until their retention cleanup; native Slack and Paseo histories have separate deletion controls.
 

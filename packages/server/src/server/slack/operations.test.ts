@@ -169,6 +169,55 @@ it.skipIf(process.platform === "win32")(
       expect((await stat(join(directory, "logs", name))).mode & 0o777).toBe(0o600);
   },
 );
+it("requires recorded cancellation, a matching agent and stopped-process acknowledgement before closing held work", async () => {
+  const { directory, store } = await fixture();
+  const config = join(directory, "bridge-settings.json");
+  await writeFile(
+    config,
+    JSON.stringify({
+      appId: "A1",
+      botUserId: "U9",
+      dataDirectory: directory,
+      healthPort: 34672,
+      policy,
+      hosts: [
+        {
+          name: "local",
+          url: "ws://127.0.0.1:6767/ws",
+          serverId: "srv1",
+          passwordEnv: "FIXTURE_PASSWORD",
+          agentConfig: { provider: "codex/fixture" },
+        },
+      ],
+    }),
+  );
+  await store.prepareDispatch("Ev1", { epoch: "native", seq: 1 });
+  await store.transition("Ev1", "dispatching", "needs_attention");
+  await expect(
+    maintainBridge(config, "resolve-canceled", ["Ev1", "a1", "processes-stopped"]),
+  ).rejects.toThrow("recorded native cancellation");
+  await store.resume("Ev1");
+  await store.prepareDispatch("Ev1", { epoch: "native", seq: 1 });
+  await store.recordTerminal(store.pending()[0].conversationKey, "canceled");
+  await store.transition("Ev1", "dispatching", "needs_attention");
+  await expect(maintainBridge(config, "resolve-canceled", ["Ev1", "a1"])).rejects.toThrow(
+    "processes-stopped",
+  );
+  await expect(
+    maintainBridge(config, "resolve-canceled", ["Ev1", "other", "processes-stopped"]),
+  ).rejects.toThrow("match the held task");
+  await expect(
+    maintainBridge(config, "resolve-canceled", ["Ev1", "a1", "processes-stopped"]),
+  ).resolves.toMatchObject({ resolved: "Ev1", terminal: "canceled", replayed: false });
+  const resolved = await ConversationStore.open(directory, policy);
+  expect(resolved.pending()).toEqual([]);
+  expect(resolved.deliveries()).toHaveLength(1);
+  expect(resolved.deliveries()[0].text).toContain("Canceled (operator verified)");
+  await expect(
+    maintainBridge(config, "resolve-canceled", ["Ev1", "a1", "processes-stopped"]),
+  ).rejects.toThrow("Only held tasks");
+});
+
 it("refuses maintenance while the service owns PID admission", async () => {
   const { directory } = await fixture();
   const config = join(directory, "bridge-settings.json");
@@ -194,6 +243,9 @@ it("refuses maintenance while the service owns PID admission", async () => {
   await acquirePidLock(directory, null);
   try {
     await expect(maintainBridge(config, "prune", [])).rejects.toThrow("Stop the bridge");
+    await expect(
+      maintainBridge(config, "resolve-canceled", ["Ev1", "a1", "processes-stopped"]),
+    ).rejects.toThrow("Stop the bridge");
   } finally {
     await releasePidLock(directory);
   }
