@@ -2,7 +2,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import type { WebSocketLike } from "@getpaseo/client/internal/daemon-client";
 import { z } from "zod";
 import { hashSync } from "bcryptjs";
@@ -95,7 +95,9 @@ async function fixture(modeId = "full-access", withDisconnect = false) {
     { ...config.hosts[0], password: "fixture-password" },
     withDisconnect
       ? (url, options) => {
-          const socket = new WebSocket(url, options?.protocols, { headers: options?.headers });
+          const socket = new WebSocket(url, options?.protocols, {
+            headers: options?.headers,
+          });
           socket.on("open", () => {
             if (blocked) socket.terminate();
           });
@@ -147,16 +149,28 @@ it("preserves one session and exactly one dispatch across duplicate intake and r
       failures.push(code);
     },
   };
-  const first = new ConversationRunner({ ...input, store, signal: firstController.signal });
+  const first = new ConversationRunner({
+    ...input,
+    store,
+    signal: firstController.signal,
+  });
   cleanup.push(async () => {
     firstController.abort();
     await first.close();
   });
   await first.tick();
   await expect
-    .poll(() => ({ pending: store.pending(), failures, turns, deliveries: store.deliveries() }), {
-      timeout: 10_000,
-    })
+    .poll(
+      () => ({
+        pending: store.pending(),
+        failures,
+        turns,
+        deliveries: store.deliveries(),
+      }),
+      {
+        timeout: 10_000,
+      },
+    )
     .toMatchObject({ pending: [] });
   expect(turns).toEqual([message.text]);
   const agentId = store.bindings()[0].agentId;
@@ -198,8 +212,14 @@ it("preserves one session and exactly one dispatch across duplicate intake and r
     text: "respond with exactly: recovered-once",
   });
   const agent = await host.inspect(recovered.bindings()[0]);
-  const tail = await agent.timeline.refetch({ limit: 1, projection: "canonical" });
-  await recovered.prepareDispatch("Ev3", { epoch: tail.epoch, seq: tail.window.maxSeq });
+  const tail = await agent.timeline.refetch({
+    limit: 1,
+    projection: "canonical",
+  });
+  await recovered.prepareDispatch("Ev3", {
+    epoch: tail.epoch,
+    seq: tail.window.maxSeq,
+  });
   const pending = recovered.pending().find((entry) => entry.id === "Ev3");
   if (!pending) throw new Error("Recovery fixture input missing");
   // Execution succeeds while the bridge journal still says dispatching: the acknowledgement was lost.
@@ -272,7 +292,9 @@ it("holds a real daemon permission until an authorized bound interaction, and de
     .deliveries()
     .find((entry) => entry.text.startsWith("Permission required:"));
   const actions = z
-    .object({ elements: z.array(z.object({ action_id: z.string(), value: z.string() })) })
+    .object({
+      elements: z.array(z.object({ action_id: z.string(), value: z.string() })),
+    })
     .parse(delivery?.blocks?.at(-1)).elements;
   const token = actions.find((entry) => entry.action_id === "paseo_allow")?.value;
   if (!token || !delivery) throw new Error("Fixture approval missing");
@@ -315,7 +337,9 @@ it("holds a real daemon permission until an authorized bound interaction, and de
     .deliveries()
     .findLast((entry) => entry.text.startsWith("Permission required:"));
   const denyActions = z
-    .object({ elements: z.array(z.object({ action_id: z.string(), value: z.string() })) })
+    .object({
+      elements: z.array(z.object({ action_id: z.string(), value: z.string() })),
+    })
     .parse(denied?.blocks?.at(-1)).elements;
   const denyToken = denyActions.find((entry) => entry.action_id === "paseo_deny")?.value;
   if (!denyToken || !denied) throw new Error("Fixture denial missing");
@@ -356,6 +380,62 @@ it("rejects a daemon that accepts anonymous connections even when a password was
       serverId: daemon.daemon.getServerId(),
     }),
   ).rejects.toThrow("verification pending");
+}, 20_000);
+
+it("verifies anonymous denial when the daemon requires hello before checking credentials", async () => {
+  const daemon = await createTestPaseoDaemon({
+    mcpEnabled: false,
+    auth: { password: hashSync("fixture-password", 4) },
+  });
+  cleanup.push(() => daemon.close());
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const sockets = new Set<WebSocket>();
+  let anonymousHellos = 0;
+  cleanup.push(async () => {
+    for (const socket of sockets) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  server.on("connection", (socket, request) => {
+    sockets.add(socket);
+    if (!request.headers["sec-websocket-protocol"]) {
+      socket.on("message", (data) => {
+        if (JSON.parse(data.toString()).type !== "hello") return;
+        anonymousHellos++;
+        socket.close(4401, "Password required");
+      });
+      return;
+    }
+    const upstream = new WebSocket(
+      `ws://127.0.0.1:${daemon.port}/ws`,
+      request.headers["sec-websocket-protocol"].split(",").map((value) => value.trim()),
+    );
+    sockets.add(upstream);
+    const queued: string[] = [];
+    socket.on("message", (data) => {
+      if (upstream.readyState === WebSocket.OPEN) upstream.send(data.toString());
+      else queued.push(data.toString());
+    });
+    upstream.on("open", () => {
+      for (const data of queued.splice(0)) upstream.send(data);
+    });
+    upstream.on("message", (data) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(data.toString());
+    });
+    upstream.on("error", () => socket.terminate());
+    socket.on("close", () => upstream.terminate());
+  });
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Fixture address missing");
+  const host = new SlackDaemon({
+    url: `ws://127.0.0.1:${address.port}/ws`,
+    serverId: daemon.daemon.getServerId(),
+    password: "fixture-password",
+    agentConfig: { provider: "codex/gpt-5.4-mini" },
+  });
+  cleanup.push(() => host.close());
+  await host.connect();
+  expect(anonymousHellos).toBe(1);
 }, 20_000);
 
 it("recovers a real SDK network disconnect with retained work and one native dispatch", async () => {
@@ -435,7 +515,10 @@ it("rejects attachment and dispatch outside the verified provider/model while re
   const otherRoute = new SlackDaemon({
     ...config.hosts[0],
     password: "fixture-password",
-    agentConfig: { ...config.hosts[0].agentConfig, provider: "codex/unverified-model" },
+    agentConfig: {
+      ...config.hosts[0].agentConfig,
+      provider: "codex/unverified-model",
+    },
   });
   cleanup.push(() => otherRoute.close());
   await otherRoute.connect();
@@ -446,7 +529,10 @@ it("rejects attachment and dispatch outside the verified provider/model while re
     "session_provider_model",
   );
   await expect(
-    otherRoute.respond(agent, { requestId: "unverified-request", response: { behavior: "deny" } }),
+    otherRoute.respond(agent, {
+      requestId: "unverified-request",
+      response: { behavior: "deny" },
+    }),
   ).rejects.toThrow("session_provider_model");
   expect((await otherRoute.inspect(binding)).id).toBe(agent.id);
   await otherRoute.cancel(binding);
@@ -488,7 +574,10 @@ it("rejects a native permission-mode override before creation recovery, attachme
     "session_permission_mode",
   );
   await expect(
-    host.respond(agent, { requestId: "mode-request", response: { behavior: "allow" } }),
+    host.respond(agent, {
+      requestId: "mode-request",
+      response: { behavior: "allow" },
+    }),
   ).rejects.toThrow("session_permission_mode");
   expect((await host.inspect(binding)).id).toBe(agent.id);
   await host.cancel(binding);

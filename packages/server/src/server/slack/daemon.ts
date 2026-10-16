@@ -36,6 +36,18 @@ async function requireAnonymousRejection(url: string): Promise<void> {
       if (denied) resolve();
       else reject(new SlackPolicyError("daemon_authentication_not_enforced"));
     }
+    // Newer daemons admit credentials during hello, after the WebSocket upgrade.
+    socket.on("open", () =>
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          clientId: "savage-slack-auth-probe",
+          clientType: "cli",
+          protocolVersion: 1,
+          capabilities: {},
+        }),
+      ),
+    );
     socket.on("unexpected-response", (_request, response) => {
       response.resume();
       finish(response.statusCode === 401 || response.statusCode === 403);
@@ -71,7 +83,12 @@ export class SlackDaemon {
       ...config,
       webSocketFactory,
       // Only the bridge's fixed event codes and hashed correlations enter operational logs.
-      logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      },
       clientId: "savage-slack-bridge",
       connectTimeoutMs: 10_000,
       reconnect: { enabled: true, baseDelayMs: 1000, maxDelayMs: 30_000 },
@@ -115,7 +132,9 @@ export class SlackDaemon {
     if (separator < 1) throw new SlackPolicyError("provider_model_format");
     const provider = this.config.agentConfig.provider.slice(0, separator);
     const model = this.config.agentConfig.provider.slice(separator + 1);
-    const catalog = await this.api.providers.listModels(provider, { cwd: target.cwd });
+    const catalog = await this.api.providers.listModels(provider, {
+      cwd: target.cwd,
+    });
     if (catalog.error || !catalog.models?.some((entry) => entry.id === model))
       throw new SlackStateError(
         "The configured provider/model is unavailable; operator review required",
