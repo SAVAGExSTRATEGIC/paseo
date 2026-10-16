@@ -1,6 +1,6 @@
 #!/bin/bash
-# Trusted-main commands for the existing Linux CI checks.
-# Invoked only inside the isolated disposable Linux guest; no host execution.
+# Trusted-main commands for isolated CI checks.
+# Invoked only inside an isolated disposable guest; no host execution.
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export npm_config_prefix="$HOME/.local"

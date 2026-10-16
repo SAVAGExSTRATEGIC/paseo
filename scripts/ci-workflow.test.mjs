@@ -73,11 +73,12 @@ async function runTartSourceGate(fixture) {
   );
 }
 
-test("Tart lane is automatic, gated, scoped to its own Mac group, and checks source before checkout", () => {
+test("Tart reusable lane is read-only, gated, scoped to its own group, and checks source before checkout", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
   assert.match(source, /workflow_dispatch:/);
-  assert.match(source, /^ {2}push:\s*$/m);
-  assert.match(source, /^ {2}pull_request_target:\s*$/m);
+  assert.match(source, /workflow_call:/);
+  assert.doesNotMatch(source, /^ {2}(push|pull_request_target):\s*$/m);
+  assert.doesNotMatch(source, /statuses: write|contents: write|report-pr:/);
   assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
   assert.match(source, /vars\.PASEO_PUBLIC_CI_COMMISSIONED == 'true'/);
   assert.match(source, /group: Paseo Isolated CI/);
