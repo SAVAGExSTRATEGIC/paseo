@@ -622,3 +622,44 @@ test(
     assert.equal(statSync(imageCache).mode & 0o777, 0o555);
   },
 );
+
+test(
+  "Electron guest preflight blocks missing libraries before desktop launch",
+  { skip: process.platform === "win32" ? "The guest preflight runs on Linux" : false },
+  () => {
+    const source = readFileSync(new URL("scripts/local-tart-check.sh", repoRoot), "utf8");
+    const match = /Check Electron shared libraries\\n'\n([\s\S]*?)    printf '::endgroup::/.exec(
+      source,
+    );
+    assert.ok(match, "The Linux desktop check must inspect its actual Electron runtime");
+    const root = mkdtempSync(join(tmpdir(), "paseo electron preflight "));
+    try {
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "node"), "#!/bin/bash\nprintf '/fixture/electron\\n'\n", {
+        mode: 0o755,
+      });
+      writeFileSync(join(bin, "ldd"), '#!/bin/bash\nprintf "%s\\n" "$LOADER_REPORT"\n', {
+        mode: 0o755,
+      });
+      for (const [report, expected] of [
+        ["libgtk-3.so.0 => /lib/libgtk-3.so.0", 0],
+        ["libgtk-3.so.0 => not found", 1],
+      ]) {
+        const result = spawnSync(
+          "/bin/bash",
+          ["-c", `set -euo pipefail\n${match[1]}\nprintf 'LAUNCH_ALLOWED\\n'`],
+          {
+            encoding: "utf8",
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOADER_REPORT: report },
+          },
+        );
+        assert.equal(result.status, expected, result.stderr);
+        assert.equal(result.stdout.includes("LAUNCH_ALLOWED"), expected === 0);
+        if (expected !== 0) assert.match(result.stderr, /runtime libraries are missing/);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
