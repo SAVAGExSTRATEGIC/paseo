@@ -192,3 +192,15 @@ The app runs on iOS, Android, web (browser), and web (Electron desktop). Code is
 ## Debugging
 
 Find the complete daemon logs and traces in the $PASEO_HOME/daemon.log
+
+<!-- paseo-automatic-local-ci:20261016 -->
+
+## Paseo automatic CI (Hunter, Oct 16 2026)
+
+For `SAVAGExSTRATEGIC/paseo`, make CI and pull-request checks automatic on isolated local Tart VMs wherever the required platform is supported. Hunter selected local Tart for compatible macOS/Linux work and GitHub's free standard Windows runners for Windows coverage. Preserve platform coverage and report any lane that is not yet commissioned; never replace a required platform check with a different operating system and call it equivalent.
+
+Use only verified free options. Preserve zero-dollar spending limits; do not supply billable model API credentials to automatic tests, buy runner capacity, enable paid reviews, or assume artifact storage and deployment services are free. Existing hardware and electricity remain local operating costs. Keep public-source VMs isolated from the host and private runners, use disposable job environments, and retain cleanup evidence. Do not execute PR-controlled scripts on the host or expose privileged tokens to them.
+
+Production completion requires real automatic PR and main runs, exact source and runner identities, successful required checks, and verified VM cleanup/replacement. Source tests, manual dispatch alone, or a passing subset do not prove the full system. Maintain a workflow inventory that explicitly identifies any remaining platform, authentication, licensing, or deployment limitation. This permission is scoped to Paseo and does not change other repositories' routing defaults.
+
+<!-- /paseo-automatic-local-ci:20261016 -->

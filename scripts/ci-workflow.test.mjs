@@ -64,16 +64,24 @@ async function runTartSourceGate(fixture) {
   );
 }
 
-test("Tart lane is manual, gated, scoped to its own Mac group, and checks source before checkout", () => {
+test("Tart lane is automatic, gated, scoped to its own Mac group, and checks source before checkout", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
   assert.match(source, /workflow_dispatch:/);
-  assert.doesNotMatch(source, /^ {2}(?:push|pull_request|merge_group):\s*$/m);
+  assert.match(source, /^ {2}push:\s*$/m);
+  assert.match(source, /^ {2}pull_request_target:\s*$/m);
+  assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
   assert.match(source, /vars\.PASEO_PUBLIC_CI_COMMISSIONED == 'true'/);
   assert.match(source, /group: Paseo Isolated CI/);
   assert.match(source, /paseo-isolated-macos/);
-  assert.doesNotMatch(source, /ubuntu-latest|windows-latest|savage-local-actions/);
+  assert.doesNotMatch(
+    source.split("  report-pr:")[0],
+    /ubuntu-latest|windows-latest|savage-local-actions/,
+  );
   assert.match(source, /persist-credentials: false/);
-  assert.match(source, /ref: \$\{\{ inputs\.expected_head \}\}/);
+  assert.match(
+    source,
+    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| inputs\.expected_head \|\| github\.sha \}\}/,
+  );
   assert.match(source, /contents: read/);
   assert.match(source, /pull-requests: read/);
   assert.ok(source.indexOf("SOURCE_GATE") < source.indexOf("uses: actions/checkout@"));
@@ -428,4 +436,24 @@ test("desktop packaging smokes main pushes and only the pull requests that touch
   for (const action of ["actions/checkout", "actions/setup-node", "actions/upload-artifact"]) {
     assert.match(source, new RegExp(`${action}@[0-9a-f]{40} # v\\d+\\.\\d+\\.\\d+`));
   }
+});
+
+for (const event of ["push", "pull_request_target"]) {
+  test(`Tart automatic ${event} validates immutable source`, async () => {
+    const fixture = tartSourceFixture();
+    fixture.env.GITHUB_EVENT_NAME = event;
+    if (event === "push") {
+      fixture.env.EXPECTED_PR = "";
+      fixture.env.EXPECTED_HEAD = fixture.main.sha;
+    }
+    await runTartSourceGate(fixture);
+  });
+}
+
+test("Tart pull request target cannot silently check main", async () => {
+  const fixture = tartSourceFixture();
+  fixture.env.GITHUB_EVENT_NAME = "pull_request_target";
+  fixture.env.EXPECTED_PR = "";
+  fixture.env.EXPECTED_HEAD = fixture.main.sha;
+  await assert.rejects(runTartSourceGate(fixture));
 });
