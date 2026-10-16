@@ -1,8 +1,13 @@
 # Commission only after host, network, credentials and runner identity are verified.
-# This adds a native macOS qualification lane; existing platform checks remain separate.
+# Public source executes only in disposable network-isolated guests with read-only tokens.
 name: Local Tart CI
-run-name: Tart macOS ${{ inputs.pull_request || 'main' }} @ ${{ inputs.expected_head }}
+run-name: Tart macOS ${{ github.event.pull_request.number || inputs.pull_request || 'main' }} @ ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
 "on":
+  push:
+    branches: [main]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pull_request:
@@ -17,7 +22,7 @@ permissions:
   contents: read
   pull-requests: read
 concurrency:
-  group: paseo-tart-${{ inputs.pull_request || 'main' }}
+  group: paseo-tart-${{ github.event.pull_request.number || inputs.pull_request || 'main' }}
   cancel-in-progress: false
 env:
   ONNXRUNTIME_NODE_INSTALL: skip
@@ -25,7 +30,7 @@ jobs:
   server-tests-macos:
     name: Tart macOS file observation
     if:
-      ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' && github.event_name == 'workflow_dispatch' && github.ref
+      ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' && contains(fromJSON('["workflow_dispatch","push","pull_request_target"]'), github.event_name) && github.ref
       == 'refs/heads/main' }}
     runs-on:
       group: Paseo Isolated CI
@@ -34,12 +39,15 @@ jobs:
         - macOS
         - ARM64
         - paseo-isolated-macos
+    outputs:
+      tested-head: ${{ steps.source.outputs.head }}
     steps:
       - name: Verify trusted main and immutable source before checkout
+        id: source
         shell: bash
         env:
-          EXPECTED_PR: ${{ inputs.pull_request }}
-          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_PR: ${{ github.event.pull_request.number || inputs.pull_request }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           node --input-type=module <<'SOURCE_GATE'
@@ -49,10 +57,14 @@ jobs:
           const env = process.env;
           if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
               env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_WORKFLOW_REF !== workflow ||
-              env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || env.GITHUB_WORKFLOW_SHA !== env.GITHUB_SHA) {
+              !['workflow_dispatch', 'push', 'pull_request_target'].includes(env.GITHUB_EVENT_NAME) || env.GITHUB_WORKFLOW_SHA !== env.GITHUB_SHA) {
             throw new Error('Untrusted workflow origin');
           }
           const pr = env.EXPECTED_PR || '';
+          if ((env.GITHUB_EVENT_NAME === 'pull_request_target' && pr === '') ||
+              (env.GITHUB_EVENT_NAME === 'push' && pr !== '')) {
+            throw new Error('Event and source kind differ');
+          }
           if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }
@@ -78,10 +90,11 @@ jobs:
             }
           }
           SOURCE_GATE
+          printf 'head=%s\n' "$EXPECTED_HEAD" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: SAVAGExSTRATEGIC/paseo
-          ref: ${{ inputs.expected_head }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -98,3 +111,31 @@ jobs:
             src/server/workspace-git-service.observation.integration.test.ts \
             --bail=1
     timeout-minutes: 30
+
+  report-pr:
+    name: Report Tart result to exact PR head
+    needs: server-tests-macos
+    if: ${{ always() && github.event_name == 'pull_request_target' && needs.server-tests-macos.outputs.tested-head != '' }}
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Publish only to the still-current admitted PR head
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PR: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ needs.server-tests-macos.outputs.tested-head }}
+          TEST_RESULT: ${{ needs.server-tests-macos.result }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -ne 'SAVAGExSTRATEGIC/paseo' -or $env:EXPECTED_PR -notmatch '^[1-9][0-9]*$' -or $env:EXPECTED_HEAD -notmatch '^[0-9a-f]{40}$') { throw 'Invalid result identity' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $base = 'https://api.github.com/repos/SAVAGExSTRATEGIC/paseo'
+          $pr = Invoke-RestMethod -Headers $headers -Uri "$base/pulls/$env:EXPECTED_PR" -TimeoutSec 30
+          if ($pr.state -ne 'open' -or $pr.head.sha -ne $env:EXPECTED_HEAD -or $pr.head.repo.id -ne 1382441324 -or $pr.base.repo.id -ne 1382441324 -or $pr.base.ref -ne 'main') { throw 'PR changed; refusing stale result' }
+          $state = if ($env:TEST_RESULT -eq 'success') { 'success' } else { 'failure' }
+          $body = @{ state = $state; context = 'local-tart/macos'; description = "Isolated local Tart: $env:TEST_RESULT"; target_url = "https://github.com/SAVAGExSTRATEGIC/paseo/actions/runs/$env:GITHUB_RUN_ID" } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -Headers $headers -Uri "$base/statuses/$env:EXPECTED_HEAD" -ContentType 'application/json' -Body $body -TimeoutSec 30 | Out-Null

@@ -19,7 +19,7 @@
     "build": "tsc -p tsconfig.json --incremental false",
     "build:clean": "npm run clean && npm run build",
     "prepack": "npm run build:clean",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:local",
     "test:unit": "vitest run src",
     "test:local": "tsx tests/run-all.ts",

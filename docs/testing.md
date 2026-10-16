@@ -241,3 +241,13 @@ Every test in this repo lives in exactly one of these shapes:
 2. **Real end-to-end tests** — real daemon, real network, real browser (Playwright for app code) or a real isolated server instance (for daemon code). No JSDOM, no mocked transport.
 
 Anything in between — component tests in JSDOM, vitest tests that mock the module under test, tests that assert on private state — is slop on its way out.
+
+### CLI declaration checking
+
+The CLI uses stable `tsc --noEmit`, matching its production compiler. The
+currently pinned preview `tsgo` loses contextual types from the built client's
+Zod-derived response declarations under NodeNext and reports implicit-any
+callbacks after a clean successful server build. Do not patch each callback or
+disable strict checking to conceal that declaration-consumer problem. Rebuild
+`npm run build:server` first, then run the stable CLI checker. Other workspaces
+retain their existing compiler until evidence requires a change.
