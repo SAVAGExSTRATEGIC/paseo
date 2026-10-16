@@ -24,6 +24,11 @@ function tartSourceFixture() {
       GITHUB_WORKFLOW_REF:
         "SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@refs/heads/main",
       GITHUB_WORKFLOW_SHA: main,
+      JOB_WORKFLOW_REF:
+        "SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@refs/heads/main",
+      JOB_WORKFLOW_SHA: main,
+      SOURCE_CHECK: "file-observation",
+      EVENT_PR_HEAD: head,
       GITHUB_SHA: main,
       GITHUB_EVENT_NAME: "workflow_dispatch",
       EXPECTED_PR: "13",
@@ -57,7 +62,11 @@ async function runTartSourceGate(fixture) {
       assert.ok(options.signal);
       return {
         ok: fixture.httpOk,
-        json: async () => (url.endsWith("commits/main") ? fixture.main : fixture.pull),
+        json: async () => {
+          if (url.includes("/git/ref/")) return fixture.mergeRef;
+          if (url.endsWith("commits/main")) return fixture.main;
+          return fixture.pull;
+        },
       };
     },
     AbortSignal,
@@ -80,7 +89,7 @@ test("Tart lane is automatic, gated, scoped to its own Mac group, and checks sou
   assert.match(source, /persist-credentials: false/);
   assert.match(
     source,
-    /ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| inputs\.expected_head \|\| github\.sha \}\}/,
+    /ref: \$\{\{ inputs\.expected_head \|\| github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/,
   );
   assert.match(source, /contents: read/);
   assert.match(source, /pull-requests: read/);
@@ -107,7 +116,7 @@ for (const [name, mutate] of [
   ["non-main source head", (f) => (f.env.EXPECTED_HEAD = "b".repeat(40))],
   ["main moved after dispatch", (f) => (f.main.sha = "c".repeat(40))],
   ["unreadable main", (f) => (f.httpOk = false)],
-  ["foreign workflow", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
+  ["foreign workflow", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
 ]) {
   test(`Tart main qualification refuses ${name}`, async () => {
     const fixture = tartSourceFixture();
@@ -121,10 +130,10 @@ for (const [name, mutate] of [
 for (const [name, mutate] of [
   ["foreign repository", (f) => (f.env.GITHUB_REPOSITORY = "foreign/paseo")],
   ["recreated repository ID", (f) => (f.env.GITHUB_REPOSITORY_ID = "1")],
-  ["pull request workflow code", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
+  ["pull request workflow code", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
   ["non-main ref", (f) => (f.env.GITHUB_REF = "refs/heads/feature")],
   ["non-manual event", (f) => (f.env.GITHUB_EVENT_NAME = "pull_request")],
-  ["different workflow SHA", (f) => (f.env.GITHUB_WORKFLOW_SHA = "c".repeat(40))],
+  ["different workflow SHA", (f) => (f.env.JOB_WORKFLOW_SHA = "c".repeat(40))],
   ["invalid PR input", (f) => (f.env.EXPECTED_PR = "13;echo invalid")],
   ["branch instead of SHA", (f) => (f.env.EXPECTED_HEAD = "main")],
   ["changed PR head", (f) => (f.pull.head.sha = "c".repeat(40))],
@@ -456,4 +465,59 @@ test("Tart pull request target cannot silently check main", async () => {
   fixture.env.EXPECTED_PR = "";
   fixture.env.EXPECTED_HEAD = fixture.main.sha;
   await assert.rejects(runTartSourceGate(fixture));
+});
+
+function reusablePRFixture() {
+  const f = tartSourceFixture();
+  f.env.GITHUB_EVENT_NAME = "pull_request";
+  f.env.GITHUB_REF = "refs/pull/13/merge";
+  f.env.GITHUB_WORKFLOW_REF = "SAVAGExSTRATEGIC/paseo/.github/workflows/ci.yml@refs/pull/13/merge";
+  f.env.EXPECTED_HEAD = f.env.GITHUB_SHA = f.pull.merge_commit_sha = "c".repeat(40);
+  f.env.SOURCE_CHECK = "typecheck";
+  return f;
+}
+
+test("reusable Tart check binds trusted job definition and exact PR merge candidate", async () => {
+  await runTartSourceGate(reusablePRFixture());
+});
+
+for (const [name, mutate] of [
+  ["caller substitutes another commit", (f) => (f.env.EXPECTED_HEAD = "d".repeat(40))],
+  ["PR head moved", (f) => (f.pull.head.sha = "d".repeat(40))],
+  ["merge candidate changed", (f) => (f.pull.merge_commit_sha = "d".repeat(40))],
+  ["PR-controlled job definition", (f) => (f.env.JOB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF)],
+  ["arbitrary check command", (f) => (f.env.SOURCE_CHECK = "typecheck; echo bypass")],
+]) {
+  test(`reusable Tart check refuses ${name}`, async () => {
+    const f = reusablePRFixture();
+    mutate(f);
+    await assert.rejects(runTartSourceGate(f));
+  });
+}
+
+test("merge queue checks bind current base and still-existing exact queue ref", async () => {
+  const f = tartSourceFixture();
+  f.env.GITHUB_EVENT_NAME = "merge_group";
+  f.env.EXPECTED_PR = "";
+  f.env.GITHUB_REF = "refs/heads/gh-readonly-queue/main/pr-13-fixture";
+  f.env.EXPECTED_HEAD = f.env.GITHUB_SHA = f.env.EVENT_MERGE_HEAD = "c".repeat(40);
+  f.env.EVENT_MERGE_BASE = f.main.sha;
+  f.mergeRef = { object: { sha: f.env.EXPECTED_HEAD } };
+  await runTartSourceGate(f);
+  f.mergeRef.object.sha = "d".repeat(40);
+  await assert.rejects(runTartSourceGate(f));
+});
+
+test("fixed Linux check commands retain each existing check without paid API secrets", () => {
+  const script = readFileSync(new URL("scripts/local-tart-check.sh", repoRoot), "utf8");
+  for (const name of gatedCiJobs.keys()) {
+    if (name.endsWith("-windows") || name === "server-tests-macos") continue;
+    assert.ok(script.includes(`  ${name})`), `${name} must be implemented`);
+  }
+  assert.doesNotMatch(script, /OPENAI_API_KEY|OPENROUTER_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|\beval\b/);
+  assert.match(script, /npm run test --workspace=@getpaseo\/server/);
+  assert.match(script, /npm run typecheck/);
+  assert.match(script, /npm audit signatures/);
+  assert.match(script, /xvfb-run/);
+  assert.match(script, /test:e2e:browser-tabs/);
 });

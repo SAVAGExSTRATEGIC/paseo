@@ -1,8 +1,20 @@
 # Commission only after host, network, credentials and runner identity are verified.
 # Public source executes only in disposable network-isolated guests with read-only tokens.
 name: Local Tart CI
-run-name: Tart macOS ${{ github.event.pull_request.number || inputs.pull_request || 'main' }} @ ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
+run-name: Tart macOS ${{ github.event.pull_request.number || inputs.pull_request || 'main' }} @ ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
 "on":
+  workflow_call:
+    inputs:
+      expected_head:
+        required: true
+        type: string
+      pull_request:
+        required: false
+        default: ""
+        type: string
+      check:
+        required: true
+        type: string
   push:
     branches: [main]
   pull_request_target:
@@ -10,6 +22,11 @@ run-name: Tart macOS ${{ github.event.pull_request.number || inputs.pull_request
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
+      check:
+        description: Fixed check name; file-observation uses macOS, other checks use Linux
+        required: false
+        default: file-observation
+        type: string
       pull_request:
         description: Open, non-draft PR; leave blank to qualify exact current main
         required: false
@@ -22,23 +39,21 @@ permissions:
   contents: read
   pull-requests: read
 concurrency:
-  group: paseo-tart-${{ github.event.pull_request.number || inputs.pull_request || 'main' }}
+  group: paseo-tart-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}-${{ inputs.check || 'file-observation' }}
   cancel-in-progress: false
 env:
   ONNXRUNTIME_NODE_INSTALL: skip
 jobs:
   server-tests-macos:
-    name: Tart macOS file observation
-    if:
-      ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' && contains(fromJSON('["workflow_dispatch","push","pull_request_target"]'), github.event_name) && github.ref
-      == 'refs/heads/main' }}
+    name: Tart ${{ inputs.check || 'file-observation' }}
+    if: ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' }}
     runs-on:
       group: Paseo Isolated CI
       labels:
         - self-hosted
-        - macOS
         - ARM64
-        - paseo-isolated-macos
+        - ${{ inputs.check && inputs.check != 'file-observation' && 'Linux' || 'macOS' }}
+        - ${{ inputs.check && inputs.check != 'file-observation' && 'paseo-isolated-linux' || 'paseo-isolated-macos' }}
     outputs:
       tested-head: ${{ steps.source.outputs.head }}
     steps:
@@ -47,24 +62,27 @@ jobs:
         shell: bash
         env:
           EXPECTED_PR: ${{ github.event.pull_request.number || inputs.pull_request }}
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
+          EXPECTED_HEAD: ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
           GH_TOKEN: ${{ github.token }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          SOURCE_CHECK: ${{ inputs.check || 'file-observation' }}
+          EVENT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_MERGE_HEAD: ${{ github.event.merge_group.head_sha }}
+          EVENT_MERGE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
           node --input-type=module <<'SOURCE_GATE'
           const repo = 'SAVAGExSTRATEGIC/paseo';
           const repositoryId = 1382441324;
           const workflow = `${repo}/.github/workflows/local-tart-ci.yml@refs/heads/main`;
           const env = process.env;
+          const checks = ["file-observation", "format", "lint", "typecheck", "server-tests-ubuntu", "desktop-tests-ubuntu", "app-tests", "sdk-tests", "playwright-1", "playwright-2", "playwright-3", "playwright-4", "relay-tests", "cli-tests-1", "cli-tests-2", "cli-tests-3"];
           if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
-              env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_WORKFLOW_REF !== workflow ||
-              !['workflow_dispatch', 'push', 'pull_request_target'].includes(env.GITHUB_EVENT_NAME) || env.GITHUB_WORKFLOW_SHA !== env.GITHUB_SHA) {
-            throw new Error('Untrusted workflow origin');
-          }
+              env.JOB_WORKFLOW_REF !== workflow || !/^[0-9a-f]{40}$/.test(env.JOB_WORKFLOW_SHA) ||
+              !['workflow_dispatch', 'push', 'pull_request_target', 'pull_request', 'merge_group'].includes(env.GITHUB_EVENT_NAME) ||
+              !checks.includes(env.SOURCE_CHECK)) throw new Error('Untrusted workflow origin or check');
           const pr = env.EXPECTED_PR || '';
-          if ((env.GITHUB_EVENT_NAME === 'pull_request_target' && pr === '') ||
-              (env.GITHUB_EVENT_NAME === 'push' && pr !== '')) {
-            throw new Error('Event and source kind differ');
-          }
+          const event = env.GITHUB_EVENT_NAME;
           if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }
@@ -77,24 +95,51 @@ jobs:
             return response.json();
           };
           const main = await read('commits/main');
-          if (main.sha !== env.GITHUB_SHA) throw new Error('Trusted main changed');
-          if (pr === '') {
-            if (env.EXPECTED_HEAD !== main.sha) throw new Error('Main qualification head differs');
+          if (main.sha !== env.JOB_WORKFLOW_SHA) throw new Error('Trusted main changed');
+          if (event === 'merge_group') {
+            if (pr !== '' || !/^refs\/heads\/gh-readonly-queue\/main\/[A-Za-z0-9._/-]+$/.test(env.GITHUB_REF) ||
+                env.EXPECTED_HEAD !== env.GITHUB_SHA || env.EXPECTED_HEAD !== env.EVENT_MERGE_HEAD ||
+                env.EVENT_MERGE_BASE !== main.sha) throw new Error('Merge queue source differs');
+            const ref = await read(`git/ref/${env.GITHUB_REF.slice(5)}`);
+            if (ref.object?.sha !== env.EXPECTED_HEAD) throw new Error('Merge queue ref changed');
+          } else if (pr === '') {
+            if (['pull_request', 'pull_request_target'].includes(event) || env.GITHUB_REF !== 'refs/heads/main' ||
+                env.EXPECTED_HEAD !== main.sha || env.GITHUB_SHA !== main.sha) throw new Error('Main source differs');
           } else {
+            if (event === 'push') throw new Error('Push cannot select a PR');
             const pull = await read(`pulls/${pr}`);
-            if (pull.state !== 'open' || pull.draft || pull.head.sha !== env.EXPECTED_HEAD ||
+            const fromPR = event === 'pull_request';
+            if (pull.state !== 'open' || pull.draft ||
                 pull.head.repo.full_name !== repo || pull.head.repo.id !== repositoryId ||
                 pull.base.repo.full_name !== repo || pull.base.repo.id !== repositoryId ||
-                pull.base.ref !== 'main' || pull.base.sha !== main.sha) {
+                pull.base.ref !== 'main' || pull.base.sha !== main.sha ||
+                (fromPR ? (env.GITHUB_REF !== `refs/pull/${pr}/merge` || env.GITHUB_SHA !== env.EXPECTED_HEAD ||
+                  pull.merge_commit_sha !== env.EXPECTED_HEAD || pull.head.sha !== env.EVENT_PR_HEAD) :
+                  (env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_SHA !== main.sha || pull.head.sha !== env.EXPECTED_HEAD))) {
               throw new Error('Source changed or is outside admitted repository');
             }
           }
           SOURCE_GATE
           printf 'head=%s\n' "$EXPECTED_HEAD" >> "$GITHUB_OUTPUT"
+      - name: Read fixed check commands from the trusted workflow revision
+        if: ${{ inputs.check && inputs.check != 'file-observation' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: SAVAGExSTRATEGIC/paseo
+          ref: ${{ job.workflow_sha }}
+          path: .ci-control
+          sparse-checkout: scripts/local-tart-check.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Retain trusted check commands outside the tested checkout
+        if: ${{ inputs.check && inputs.check != 'file-observation' }}
+        shell: bash
+        run: install -m 0500 .ci-control/scripts/local-tart-check.sh "$RUNNER_TEMP/paseo-tart-check.sh"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: SAVAGExSTRATEGIC/paseo
-          ref: ${{ github.event.pull_request.head.sha || inputs.expected_head || github.sha }}
+          ref: ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -102,15 +147,35 @@ jobs:
       - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
       - name: Build server dependencies
+        if: ${{ !inputs.check || inputs.check == 'file-observation' }}
         run: npm run build:server-deps
       - name: Run file observation tests
+        if: ${{ !inputs.check || inputs.check == 'file-observation' }}
         run: |
           npm run test:unit --workspace=@getpaseo/server -- \
             src/server/file-observer \
             src/server/workspace-git-service.observation.test.ts \
             src/server/workspace-git-service.observation.integration.test.ts \
             --bail=1
-    timeout-minutes: 30
+      - name: Run selected Linux check
+        if: ${{ inputs.check && inputs.check != 'file-observation' }}
+        shell: bash
+        env:
+          SOURCE_CHECK: ${{ inputs.check }}
+        run: /bin/bash "$RUNNER_TEMP/paseo-tart-check.sh" "$SOURCE_CHECK"
+      - name: Upload failure diagnostics
+        if: ${{ failure() && inputs.check && inputs.check != 'file-observation' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tart-${{ inputs.check }}-${{ github.run_attempt }}
+          path: |
+            packages/app/test-results/
+            packages/app/playwright-report/
+            ${{ runner.temp }}/desktop-lifecycle/
+            ${{ runner.temp }}/desktop-browser-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
+    timeout-minutes: 90
 
   report-pr:
     name: Report Tart result to exact PR head
