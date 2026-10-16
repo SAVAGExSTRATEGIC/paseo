@@ -1,6 +1,16 @@
 name: Nix
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "nix/**"
+      - "flake.*"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/update-nix.sh"
+      - "scripts/fix-lockfile.mjs"
+      - ".github/workflows/nix*.yml"
   push:
     branches: [main]
 
@@ -22,8 +32,8 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Update lockfile + Nix hash if stale
-        run: ./scripts/update-nix.sh
+      - name: Verify committed Nix hash
+        run: ./scripts/update-nix.sh --check
 
       - name: Build Nix package
         run: nix build .#default -o result
