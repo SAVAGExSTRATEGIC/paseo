@@ -77,6 +77,8 @@ case "${1:-}" in
     printf '::endgroup::\n'
     # Preserve Chromium stderr when Playwright reports only a launch failure.
     export DEBUG="${DEBUG:+$DEBUG,}pw:browser"
+    export ELECTRON_ENABLE_STACK_DUMPING=1
+    export ELECTRON_ENABLE_LOGGING=1
     printf '::group::Run desktop lifecycle E2E (Linux)\n'
     export PASEO_DESKTOP_LIFECYCLE_ARTIFACT_DIR="$RUNNER_TEMP/desktop-lifecycle"
     xvfb-run -a --server-args="-screen 0 1280x800x24" npm run test:e2e:lifecycle --workspace=@getpaseo/desktop

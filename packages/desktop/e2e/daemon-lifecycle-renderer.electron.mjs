@@ -1,3 +1,4 @@
+import { waitForChildExit } from "./child-exit.mjs";
 import { openSync, closeSync } from "node:fs";
 import { warmMetro } from "../../app/e2e/support/metro-warmup.mjs";
 import { spawn, execFileSync } from "node:child_process";
@@ -157,7 +158,7 @@ export async function verifyAttachedDaemonControls({ repo, root, env, home, port
     throw error;
   } finally {
     if (desktop) {
-      const exited = once(desktop.process(), "exit");
+      const exited = waitForChildExit(desktop.process());
       await desktop.evaluate(({ app }) => app.exit(0)).catch(() => {});
       await exited;
     }
