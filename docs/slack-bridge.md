@@ -87,6 +87,8 @@ Ambiguous selection lists allowed targets and keeps the original task queued. Se
 
 Permission buttons are bound to the owner, conversation, session and exact live request, and expire after ten minutes. Approval applies once. Denial, stale controls and repeat clicks cannot silently authorize another request. Ordinary text such as `approve` is a prompt, not permission.
 
+`cancel` requests cancellation of the model turn. A provider can leave a shell command running after reporting the turn canceled. For a command that keeps running, open the session link in Paseo, open that agent tab's menu, and choose **Reload agent**. This closes that agent's provider processes and reopens its saved conversation; it does not restart the shared daemon. Verify the command has stopped before proceeding. Reload can change the timeline epoch. The bridge holds an input whose history continuity cannot be proven; an operator must inspect its native outcome before using the documented maintenance `resume` procedure. Do not resend the task as a new message.
+
 Questions use an explicit `answer` token. Multiple questions show a JSON answer example with exact headers. Secret questions and unsupported native question formats must be answered in Paseo. A submission with an uncertain outcome must be inspected rather than replayed. `status` provides the session identity and link; pair the intended host in the Paseo app and verify that identity when opening it.
 
 ## Back up and restore

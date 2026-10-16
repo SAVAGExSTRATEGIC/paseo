@@ -249,6 +249,80 @@ it("preserves one session and exactly one dispatch across duplicate intake and r
   expect(failures).toEqual([]);
 }, 60_000);
 
+it("holds a changed epoch for inspection and resumes its receipt without another dispatch", async () => {
+  const { store, host, config, turns } = await fixture();
+  const message = {
+    id: "Ev-epoch",
+    teamId: "T1",
+    userId: "U1",
+    channelId: "C1",
+    rootTs: "1.1",
+    messageTs: "1.1",
+    text: "respond with exactly: epoch-once",
+    isDM: false,
+  };
+  await store.accept(message);
+  const event = store.pending()[0];
+  const target = config.policy.targets[0];
+  const agent = await host.create(event, target);
+  if (!agent.workspaceId) throw new Error("Fixture workspace missing");
+  await store.bind({
+    key: event.conversationKey,
+    ownerId: event.userId,
+    target,
+    agentId: agent.id,
+    workspaceId: agent.workspaceId,
+  });
+  // The native receipt exists, but a provider reload invalidated the saved epoch.
+  await store.prepareDispatch(event.id, {
+    epoch: "superseded-provider-epoch",
+    seq: 0,
+  });
+  await host.send({ agent, intake: store.pending()[0], text: message.text });
+  await agent.waitForFinish();
+  await store.transition(event.id, "dispatching", "running");
+  const controller = new AbortController();
+  const runner = new ConversationRunner({
+    config,
+    store,
+    hosts: new Map([["fixture", host]]),
+    signal: controller.signal,
+    failure: () => {},
+  });
+  cleanup.push(async () => {
+    controller.abort();
+    await runner.close();
+  });
+  await runner.tick();
+  await expect.poll(() => store.pending()[0]?.phase, { timeout: 10_000 }).toBe("needs_attention");
+  expect(turns).toEqual([message.text]);
+  expect(store.deliveries().some((entry) => entry.text.includes("operator reconciliation"))).toBe(
+    true,
+  );
+  controller.abort();
+  await runner.close();
+  await store.resume(event.id);
+  const recoveryController = new AbortController();
+  const recovered = new ConversationRunner({
+    config,
+    store,
+    hosts: new Map([["fixture", host]]),
+    signal: recoveryController.signal,
+    failure: () => {},
+  });
+  cleanup.push(async () => {
+    recoveryController.abort();
+    await recovered.close();
+  });
+  await recovered.tick();
+  await expect.poll(() => store.pending().length, { timeout: 10_000 }).toBe(0);
+  expect(turns).toEqual([message.text]);
+  expect(store.deliveries().filter((entry) => entry.id.startsWith("slack-final-"))).toHaveLength(1);
+  expect(store.deliveries().find((entry) => entry.id.startsWith("slack-final-"))?.text).toContain(
+    "epoch-once",
+  );
+}, 45_000);
+
 it("holds a real daemon permission until an authorized bound interaction, and denial prevents the fixture write", async () => {
   const { store, host, config, cwd } = await fixture("default");
   const controller = new AbortController();

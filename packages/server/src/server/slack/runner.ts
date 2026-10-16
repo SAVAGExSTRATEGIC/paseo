@@ -151,7 +151,7 @@ export class ConversationRunner {
     } else if (command.kind === "cancel") {
       if (!binding) throw new SlackStateError("No session is bound to cancel");
       await this.host(binding.target).cancel(binding);
-      text = `Cancellation requested for ${binding.agentId}. Watch this thread for its final state.\n${this.sessionLink(binding)}`;
+      text = `Cancellation requested for ${binding.agentId}. Watch this thread for its final turn state. A shell command may keep running after its turn is canceled. If it does, open this session in Paseo and choose Reload agent from its tab menu to stop that agent's provider processes while preserving its conversation.\n${this.sessionLink(binding)}`;
     } else if (command.kind === "answer") {
       if (!binding) throw new SlackStateError("No session is bound to answer");
       const agent = await this.host(binding.target).inspect(binding);
@@ -467,7 +467,9 @@ export class ConversationRunner {
     const current = this.input.store.pending().find((entry) => entry.id === event.id);
     const unknown =
       error instanceof Error && "code" in error && error.code === "agent_request_outcome_unknown";
-    if (unknown && current) {
+    const requiresInspection =
+      unknown || error instanceof SlackStateError || error instanceof SlackPolicyError;
+    if (requiresInspection && current) {
       await this.input.store.transition(current.id, current.phase, "needs_attention");
       await this.notice(
         event,
