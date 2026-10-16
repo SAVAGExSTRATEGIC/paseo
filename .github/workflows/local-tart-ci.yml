@@ -201,4 +201,5 @@ jobs:
         env:
           SOURCE_CHECK: ${{ inputs.check }}
         run: /bin/bash "$RUNNER_TEMP/paseo-tart-check.sh" "$SOURCE_CHECK"
-    timeout-minutes: 90
+    # Preserve the original desktop bound; packaging keeps its existing budget.
+    timeout-minutes: ${{ inputs.check == 'desktop-tests-ubuntu' && 30 || 90 }}

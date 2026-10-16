@@ -1,5 +1,5 @@
+import { waitForChildExit } from "./child-exit.mjs";
 import { verifyAttachedDaemonControls } from "./daemon-lifecycle-renderer.electron.mjs";
-import { once } from "node:events";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -65,7 +65,7 @@ async function openDesktop() {
 async function closeDesktop() {
   if (!desktop) return;
   const child = desktop.process();
-  const exited = once(child, "exit");
+  const exited = waitForChildExit(child);
   await desktop.evaluate(({ app }) => app.exit(0)).catch(() => {});
   await exited;
   desktop = null;

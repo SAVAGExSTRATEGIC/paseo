@@ -663,3 +663,35 @@ test(
     }
   },
 );
+
+test("Tart desktop retains the original thirty-minute job bound", () => {
+  const workflow = readFileSync(tartWorkflowPath, "utf8");
+  assert.match(
+    workflow,
+    /timeout-minutes: \$\{\{ inputs\.check == 'desktop-tests-ubuntu' && 30 \|\| 90 \}\}/,
+  );
+});
+
+test("Electron cleanup handles a past crash and waits for a live child", async () => {
+  const { waitForChildExit } = await import("../packages/desktop/e2e/child-exit.mjs");
+  const { EventEmitter } = await import("node:events");
+  for (const outcome of [
+    { exitCode: 1, signalCode: null },
+    { exitCode: null, signalCode: "SIGILL" },
+  ]) {
+    const child = Object.assign(new EventEmitter(), outcome);
+    await waitForChildExit(child);
+    assert.equal(child.listenerCount("exit"), 0);
+  }
+  const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null });
+  let done = false;
+  const waiting = waitForChildExit(child).then(() => {
+    done = true;
+    return undefined;
+  });
+  await Promise.resolve();
+  assert.equal(done, false);
+  child.emit("exit", 0, null);
+  await waiting;
+  assert.equal(done, true);
+});

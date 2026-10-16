@@ -1,12 +1,20 @@
+import { waitForChildExit } from "./child-exit.mjs";
 import { openSync, closeSync } from "node:fs";
 import { warmMetro } from "../../app/e2e/support/metro-warmup.mjs";
 import { spawn, execFileSync } from "node:child_process";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
 import { _electron as electron, expect } from "playwright/test";
 import { readDaemonInstance } from "@getpaseo/server/daemon-control";
+
+function stopMetroProcessGroup(child) {
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
 
 // Run under the test's private Xvfb display; native dialog input never targets
 // a user's desktop. All daemon operations still cross the real preload/IPC.
@@ -157,13 +165,13 @@ export async function verifyAttachedDaemonControls({ repo, root, env, home, port
     throw error;
   } finally {
     if (desktop) {
-      const exited = once(desktop.process(), "exit");
+      const exited = waitForChildExit(desktop.process());
       await desktop.evaluate(({ app }) => app.exit(0)).catch(() => {});
       await exited;
     }
-    if (metro.exitCode === null) {
-      const exited = once(metro, "exit");
-      process.kill(-metro.pid, "SIGTERM");
+    if (metro.exitCode === null && metro.signalCode === null) {
+      const exited = waitForChildExit(metro);
+      stopMetroProcessGroup(metro);
       await exited;
     }
   }
