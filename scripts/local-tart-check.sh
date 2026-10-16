@@ -67,6 +67,11 @@ case "${1:-}" in
     printf '::group::Install Playwright browser\n'
     npx playwright install chromium
     printf '::endgroup::\n'
+    printf '::group::Check Electron shared libraries\n'
+    ldd "$(node -p 'require("electron")')"
+    printf '::endgroup::\n'
+    # Preserve Chromium stderr when Playwright reports only a launch failure.
+    export DEBUG="${DEBUG:+$DEBUG,}pw:browser"
     printf '::group::Run desktop lifecycle E2E (Linux)\n'
     export PASEO_DESKTOP_LIFECYCLE_ARTIFACT_DIR="$RUNNER_TEMP/desktop-lifecycle"
     xvfb-run -a --server-args="-screen 0 1280x800x24" npm run test:e2e:lifecycle --workspace=@getpaseo/desktop
