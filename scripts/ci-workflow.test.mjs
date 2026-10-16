@@ -62,12 +62,11 @@ async function runTartSourceGate(fixture) {
       assert.ok(options.signal);
       return {
         ok: fixture.httpOk,
-        json: async () =>
-          url.includes("/git/ref/")
-            ? fixture.mergeRef
-            : url.endsWith("commits/main")
-              ? fixture.main
-              : fixture.pull,
+        json: async () => {
+          if (url.includes("/git/ref/")) return fixture.mergeRef;
+          if (url.endsWith("commits/main")) return fixture.main;
+          return fixture.pull;
+        },
       };
     },
     AbortSignal,
