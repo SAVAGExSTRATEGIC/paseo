@@ -87,10 +87,10 @@ test("writes the four stable 0.5.0 changelog files", () => {
       assert.deepEqual(
         result.written.map((entry) => entry.replace(/ \(.+\)$/, "")),
         [
-          "fastlane/metadata/android/en-US/changelogs/50001.txt",
-          "fastlane/metadata/android/en-US/changelogs/50002.txt",
-          "fastlane/metadata/android/en-US/changelogs/50003.txt",
-          "fastlane/metadata/android/en-US/changelogs/50004.txt",
+          path.join("fastlane", "metadata", "android", "en-US", "changelogs", "50001.txt"),
+          path.join("fastlane", "metadata", "android", "en-US", "changelogs", "50002.txt"),
+          path.join("fastlane", "metadata", "android", "en-US", "changelogs", "50003.txt"),
+          path.join("fastlane", "metadata", "android", "en-US", "changelogs", "50004.txt"),
         ],
       );
     },
@@ -266,7 +266,7 @@ test("renders the real 0.1.109 notice, which is the entry's whole point", () => 
 });
 
 test("preserves the standalone 0.1.96 Android notice", () => {
-  const changelog = readFileSync(path.resolve("CHANGELOG.md"), "utf8");
+  const changelog = readFileSync(path.resolve("CHANGELOG.md"), "utf8").replace(/\r\n/g, "\n");
   const entry = changelog.match(/## 0\.1\.96 - 2026-06-13\n([\s\S]*?)(?=\n## |$)/)?.[1];
   assert.ok(entry);
 
