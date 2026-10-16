@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { relative as relativePath } from "node:path";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, relative as relativePath } from "node:path";
 import test from "node:test";
 
 const repoRoot = new URL("../", import.meta.url);
@@ -561,3 +572,53 @@ test("packaging jobs preserve native Mac coverage and cannot publish or upload b
   assert.match(script, /nix-linux\)[\s\S]*connectedDaemon/);
   assert.match(script, /nix-hash\)[\s\S]*git diff --exit-code/);
 });
+
+function browserStorageStep() {
+  const source = readFileSync(tartWorkflowPath, "utf8").replace(/\r\n/g, "\n");
+  const match =
+    /      - name: Use job-local Playwright browser storage\n        shell: bash\n        run: \|\n((?:          .*\n)+)/.exec(
+      source,
+    );
+  assert.ok(match, "Tart browser installs need writable job-local storage");
+  assert.ok(source.indexOf(match[0]) < source.indexOf("      - name: Install dependencies"));
+  return match[1].replace(/^          /gm, "");
+}
+
+test("Tart browser storage is configured before dependency installation", () => {
+  browserStorageStep();
+});
+
+test(
+  "Tart guest browser installs use writable job storage without changing the image cache",
+  {
+    skip: process.platform === "win32" ? "Tart guests run Linux or macOS" : false,
+  },
+  (t) => {
+    const root = mkdtempSync(join(tmpdir(), "tart browser storage "));
+    const imageCache = join(root, "image browsers");
+    mkdirSync(imageCache, { mode: 0o555 });
+    const jobTemp = join(root, "job temp");
+    mkdirSync(jobTemp);
+    const githubEnv = join(root, "github env");
+    writeFileSync(githubEnv, "");
+    t.after(() => {
+      chmodSync(imageCache, 0o700);
+      rmSync(root, { recursive: true, force: true });
+    });
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", browserStorageStep()], {
+      env: {
+        ...process.env,
+        RUNNER_TEMP: jobTemp,
+        GITHUB_ENV: githubEnv,
+        PLAYWRIGHT_BROWSERS_PATH: imageCache,
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const cache = join(jobTemp, "playwright-browsers");
+    assert.equal(readFileSync(githubEnv, "utf8"), `PLAYWRIGHT_BROWSERS_PATH=${cache}\n`);
+    writeFileSync(join(cache, "__dirlock"), "writable browser installation");
+    assert.deepEqual(readdirSync(imageCache), []);
+    assert.equal(statSync(imageCache).mode & 0o777, 0o555);
+  },
+);
