@@ -61,14 +61,19 @@ case "${1:-}" in
     printf '::group::Run desktop tests\n'
     npm run test --workspace=@getpaseo/desktop
     printf '::endgroup::\n'
-    printf '::group::Install virtual display\n'
-    sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool
+    printf '::group::Install desktop runtime and virtual display\n'
+    sudo apt-get update && sudo apt-get install -y libgtk-3-0t64 xvfb xauth xdotool
     printf '::endgroup::\n'
     printf '::group::Install Playwright browser\n'
     npx playwright install chromium
     printf '::endgroup::\n'
     printf '::group::Check Electron shared libraries\n'
-    ldd "$(node -p 'require("electron")')"
+    electron_libraries="$(ldd "$(node -p 'require("electron")')")"
+    printf '%s\n' "$electron_libraries"
+    if [[ "$electron_libraries" == *"not found"* ]]; then
+      printf 'Electron runtime libraries are missing from the guest.\n' >&2
+      exit 1
+    fi
     printf '::endgroup::\n'
     # Preserve Chromium stderr when Playwright reports only a launch failure.
     export DEBUG="${DEBUG:+$DEBUG,}pw:browser"
