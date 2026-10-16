@@ -425,12 +425,18 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
   ]);
 });
 
-test("packaging runs on main without allocating pull-request runners", () => {
+test("packaging preserves main coverage and limits Nix pull requests to dependency inputs", () => {
   for (const workflowPath of [dockerWorkflowPath, nixWorkflowPath]) {
     const source = readFileSync(workflowPath, "utf8");
     const trigger = source.split("jobs:", 1)[0];
     assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
-    assert.doesNotMatch(trigger, /pull_request/);
+    if (workflowPath === nixWorkflowPath) {
+      assert.match(trigger, /pull_request:\s*\n\s+branches: \[main\]\s*\n\s+paths:/);
+      assert.match(trigger, /"package-lock\.json"/);
+      assert.match(trigger, /"nix\/\*\*"/);
+    } else {
+      assert.doesNotMatch(trigger, /pull_request/);
+    }
     assert.doesNotMatch(source, /dorny\/paths-filter/);
   }
 });
@@ -520,4 +526,13 @@ test("fixed Linux check commands retain each existing check without paid API sec
   assert.match(script, /npm audit signatures/);
   assert.match(script, /xvfb-run/);
   assert.match(script, /test:e2e:browser-tabs/);
+});
+
+test("Nix hash validation cannot write main or require publishing credentials", () => {
+  const source = readFileSync(new URL(".github/workflows/nix-update-hash.yml", repoRoot), "utf8");
+  assert.match(source, /contents: read/);
+  assert.match(source, /persist-credentials: false/);
+  assert.match(source, /update-nix\.sh --check/);
+  assert.match(source, /git diff --exit-code -- package-lock\.json nix\/npm-deps\.hash/);
+  assert.doesNotMatch(source, /secrets\.|create-github-app-token|git push|contents: write/);
 });
