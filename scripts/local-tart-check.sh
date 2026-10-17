@@ -62,7 +62,9 @@ case "${1:-}" in
     npm run test --workspace=@getpaseo/desktop
     printf '::endgroup::\n'
     printf '::group::Install desktop runtime and virtual display\n'
-    sudo apt-get update && sudo apt-get install -y libgtk-3-0t64 xvfb xauth xdotool
+    # A fresh guest can still be applying Ubuntu's background updates.
+    sudo apt-get update
+    sudo apt-get -o DPkg::Lock::Timeout=180 install -y libgtk-3-0t64 xvfb xauth xdotool
     printf '::endgroup::\n'
     printf '::group::Install Playwright browser\n'
     npx playwright install chromium
