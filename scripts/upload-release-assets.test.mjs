@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import path from "node:path";
 
 import { collectAssets, uploadWithRetry } from "./upload-release-assets.mjs";
 
@@ -50,5 +51,5 @@ test("collects release files and skips manifests", () => {
     stat: (file) => ({ isFile: () => !file.endsWith("nested") }),
   });
 
-  assert.deepEqual(files, ["/release/Paseo.dmg", "/release/Paseo.zip"]);
+  assert.deepEqual(files, [path.join("/release", "Paseo.dmg"), path.join("/release", "Paseo.zip")]);
 });

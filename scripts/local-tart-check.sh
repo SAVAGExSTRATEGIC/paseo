@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trusted-main commands for isolated CI checks.
 # Invoked only inside an isolated disposable guest; no host execution.
 set -euo pipefail

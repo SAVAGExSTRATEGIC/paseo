@@ -101,7 +101,8 @@ buildNpmPackage {
     npm run build --workspace=@getpaseo/expo-two-way-audio
 
     # Expo web export for the Electron renderer
-    ( cd packages/app && PASEO_WEB_PLATFORM=electron npx expo export --platform web )
+    # Bound the exporter to one 4 GiB heap within the 8 GiB build guests.
+    ( cd packages/app && NODE_OPTIONS=--max-old-space-size=4096 PASEO_WEB_PLATFORM=electron npx expo export --platform web --max-workers 1 )
 
     # Desktop main process
     npm run build:main --workspace=@getpaseo/desktop

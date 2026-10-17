@@ -30,28 +30,15 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   update-hash:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Verify committed lockfile and Nix hash
-        run: |
-          ./scripts/update-nix.sh --check
-          git diff --exit-code -- package-lock.json nix/npm-deps.hash
-
-      - name: Build Nix package
-        run: nix build .#default -o result
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main
+    with:
+      expected_head: ${{ github.sha }}
+      pull_request: ${{ github.event.pull_request.number && format('{0}', github.event.pull_request.number) || '' }}
+      check: nix-hash

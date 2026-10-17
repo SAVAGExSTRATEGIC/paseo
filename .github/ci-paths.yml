@@ -18,6 +18,7 @@ workspace:
 ci:
   - ".github/actions/**"
   - ".github/workflows/ci.yml"
+  - ".github/workflows/local-tart-ci.yml"
 
 format:
   - ".agents/**/*.{cjs,css,html,js,json,jsonc,jsx,md,mjs,ts,tsx,yaml,yml}"
