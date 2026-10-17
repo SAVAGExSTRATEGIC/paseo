@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +57,49 @@ test("the linux backend fails the observation when the classification queue over
     expect(active).toBe(false);
     expect(failure).toBeInstanceOf(Error);
     expect(failure?.message).toMatch(/exceeded \d+ queued classifications/);
+  } finally {
+    active = false;
+    await backend.close();
+    await observer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("files created while a directory gains coverage are delivered", async () => {
+  const root = await mkdtemp(join(tmpdir(), "linux-coverage-"));
+  const directory = join(root, "generated");
+  const appeared = join(directory, "during-watch.txt");
+  await mkdir(directory);
+  const paths = createObserverPaths(process.platform);
+  const observer = createFileObserver();
+  const delivered: Array<{ type: string; path: string }> = [];
+  let active = true;
+  let ignored = true;
+  const backend = createLinuxBackend(
+    {
+      root,
+      metrics: observer.getDiagnostics(),
+      isActive: () => active,
+      isIgnored: (path) => ignored && paths.isInside(directory, path),
+      isPathInside: paths.isInside,
+      queueEvent: (type, path) => delivered.push({ type, path }),
+      fail: (error) => {
+        throw error;
+      },
+    },
+    paths,
+    (watched) => {
+      // Put a real file in the enumeration-to-watch gap. No native event can
+      // cover a write that precedes attaching this new directory's watcher.
+      if (watched === directory) writeFileSync(appeared, "created before coverage");
+      return { close: () => {}, on: () => {} } as never;
+    },
+  );
+  try {
+    await backend.start();
+    ignored = false;
+    await backend.updateIgnore();
+    expect(delivered).toEqual([{ type: "create", path: appeared }]);
   } finally {
     active = false;
     await backend.close();
