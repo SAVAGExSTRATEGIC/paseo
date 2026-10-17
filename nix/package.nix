@@ -87,6 +87,13 @@ buildNpmPackage rec {
   # Don't use the default npm build hook — we need a custom build sequence
   dontNpmBuild = true;
 
+  # Bound web exports within the 8 GiB build guests. The generated protocol
+  # transform can exhaust Node's default heap; avoid multiple larger workers.
+  postPatch = ''
+    substituteInPlace packages/app/package.json \
+      --replace-fail "expo export --platform web" "expo export --platform web --max-workers 1"
+  '';
+
   buildPhase = ''
     runHook preBuild
 
@@ -97,7 +104,7 @@ buildNpmPackage rec {
 
     # Build all server packages in dependency order (defined in package.json)
     npm run build:server
-    npm run build:daemon-web-ui
+    NODE_OPTIONS=--max-old-space-size=4096 npm run build:daemon-web-ui
 
     runHook postBuild
   '';
