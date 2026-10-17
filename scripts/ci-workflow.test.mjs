@@ -84,16 +84,18 @@ async function runTartSourceGate(fixture) {
   );
 }
 
-test("Tart reusable lane is read-only, gated, scoped to its own group, and checks source before checkout", () => {
+test("historical reusable path runs read-only cloud checks with source admission before checkout", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
   assert.match(source, /workflow_dispatch:/);
   assert.match(source, /workflow_call:/);
   assert.doesNotMatch(source, /^ {2}(push|pull_request_target):\s*$/m);
   assert.doesNotMatch(source, /statuses: write|contents: write|report-pr:/);
   assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
-  assert.match(source, /vars\.PASEO_PUBLIC_CI_COMMISSIONED == 'true'/);
-  assert.match(source, /group: Paseo Isolated CI/);
-  assert.match(source, /paseo-isolated-macos/);
+  assert.match(source, /'macos-26' \|\| 'ubuntu-24\.04'/);
+  assert.doesNotMatch(
+    source,
+    /self-hosted|Paseo Isolated CI|paseo-isolated-|PASEO_PUBLIC_CI_COMMISSIONED/,
+  );
   assert.doesNotMatch(
     source.split("  report-pr:")[0],
     /ubuntu-latest|windows-latest|savage-local-actions/,
@@ -559,7 +561,7 @@ for (const check of ["nix-linux", "nix-hash", "nix-macos", "docker-build"]) {
 
 test("packaging jobs preserve native Mac coverage and cannot publish or upload build records", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
-  assert.match(source, /inputs.check != 'nix-macos' && 'Linux'/);
+  assert.match(source, /inputs.check == 'nix-macos'\) && 'macos-26'/);
   assert.match(source, /platforms: linux\/amd64,linux\/arm64/);
   assert.match(source, /DOCKER_BUILD_RECORD_UPLOAD: "false"/);
   assert.match(source, /push: false/);
