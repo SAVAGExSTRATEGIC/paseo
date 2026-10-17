@@ -238,7 +238,7 @@ jobs:
 
       - name: Install virtual display
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool
+        run: sudo apt-get update && sudo apt-get -o DPkg::Lock::Timeout=180 install -y xvfb xauth xdotool imagemagick
 
       - name: Install Playwright browser
         if: ${{ runner.os == 'Linux' }}

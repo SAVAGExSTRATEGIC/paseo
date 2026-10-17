@@ -2,7 +2,6 @@ import { waitForChildExit } from "./child-exit.mjs";
 import { openSync, closeSync } from "node:fs";
 import { warmMetro } from "../../app/e2e/support/metro-warmup.mjs";
 import { spawn, execFileSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
 import { _electron as electron, expect } from "playwright/test";
@@ -112,14 +111,13 @@ export async function verifyAttachedDaemonControls({ repo, root, env, home, port
           { timeout: 10_000 },
         )
         .toBe(true);
-      const screenshot = await desktop.evaluate(async ({ desktopCapturer }) => {
-        const sources = await desktopCapturer.getSources({
-          types: ["screen"],
-          thumbnailSize: { width: 1280, height: 800 },
-        });
-        return sources[0].thumbnail.toPNG().toString("base64");
-      });
-      await writeFile(path.join(root, artifact), Buffer.from(screenshot, "base64"));
+      // Electron's desktopCapturer crashes here on Linux ARM64. Capture the
+      // real native dialog on this test's private Xvfb screen through X11.
+      execFileSync(
+        "import",
+        ["-display", process.env.DISPLAY, "-window", "root", path.join(root, artifact)],
+        { timeout: 10_000 },
+      );
       // Escape destroys the dialog on key-down. Send through the private display
       // focus so key-up does not target an already-destroyed X11 window.
       execFileSync("xdotool", ["windowfocus", "--sync", windowId, "key", key]);
