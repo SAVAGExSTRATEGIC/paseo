@@ -64,7 +64,7 @@ case "${1:-}" in
     printf '::group::Install desktop runtime and virtual display\n'
     # A fresh guest can still be applying Ubuntu's background updates.
     sudo apt-get update
-    sudo apt-get -o DPkg::Lock::Timeout=180 install -y libgtk-3-0t64 xvfb xauth xdotool
+    sudo apt-get -o DPkg::Lock::Timeout=180 install -y libgtk-3-0t64 xvfb xauth xdotool imagemagick
     printf '::endgroup::\n'
     printf '::group::Install Playwright browser\n'
     npx playwright install chromium
