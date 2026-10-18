@@ -1,0 +1,33 @@
+name: Slack Decision Queue source contract
+on:
+  pull_request:
+    paths:
+      - "packages/server/src/server/slack/**"
+      - ".github/workflows/slack-decision-queue.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: slack-decision-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  canonical-interface-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.23.3"
+      - run: npm install --prefix "$RUNNER_TEMP/decision-deps" --legacy-peer-deps --ignore-scripts --no-audit --no-fund zod@4.4.3 typescript@5.9.3 @types/node@22.15.30
+      - run: DQ_TEST_PACKAGE_ROOT="$RUNNER_TEMP/decision-deps" node --test packages/server/src/server/slack/decision-queue.contract.mjs
+      - name: Typecheck canonical interface against existing bridge policy
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs'; import path from 'node:path';
+          const deps=path.join(process.env.RUNNER_TEMP,'decision-deps/node_modules');
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'decision-tsconfig.json'),JSON.stringify({compilerOptions:{target:'ES2022',module:'ESNext',moduleResolution:'Bundler',strict:true,noEmit:true,skipLibCheck:true,esModuleInterop:true,typeRoots:[path.join(deps,'@types')],paths:{zod:[path.join(deps,'zod/index.d.cts')]}},files:['decision-queue.ts','commands.ts'].map(f=>path.join(process.cwd(),'packages/server/src/server/slack',f))}));
+          JS
+          node "$RUNNER_TEMP/decision-deps/node_modules/typescript/bin/tsc" -p "$RUNNER_TEMP/decision-tsconfig.json"
