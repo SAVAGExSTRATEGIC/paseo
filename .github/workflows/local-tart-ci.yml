@@ -17,6 +17,11 @@ run-name: Cloud ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_
         type: string
   workflow_dispatch:
     inputs:
+      backend:
+        description: Standard GitHub cloud or existing AWS fallback for Linux checks
+        type: choice
+        default: github
+        options: [github, aws]
       check:
         description: Fixed check name; file-observation and nix-macos use macOS
         required: false
@@ -42,7 +47,7 @@ env:
 jobs:
   server-tests-macos:
     name: Cloud ${{ inputs.check || 'file-observation' }}
-    runs-on: ${{ (!inputs.check || inputs.check == 'file-observation' || inputs.check == 'nix-macos') && 'macos-26' || 'ubuntu-24.04' }}
+    runs-on: ${{ (!inputs.check || inputs.check == 'file-observation' || inputs.check == 'nix-macos') && 'macos-26' || (github.event_name == 'workflow_dispatch' && inputs.backend == 'aws') && format('runs-on={0}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id) || 'ubuntu-24.04' }}
     outputs:
       tested-head: ${{ steps.source.outputs.head }}
     steps:
@@ -54,6 +59,7 @@ jobs:
           EXPECTED_HEAD: ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
           GH_TOKEN: ${{ github.token }}
           SOURCE_CHECK: ${{ inputs.check || 'file-observation' }}
+          REQUESTED_BACKEND: ${{ inputs.backend }}
           EVENT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_HEAD: ${{ github.event.merge_group.head_sha }}
           EVENT_MERGE_BASE: ${{ github.event.merge_group.base_sha }}
@@ -69,6 +75,11 @@ jobs:
               !checks.includes(env.SOURCE_CHECK)) throw new Error('Untrusted workflow origin or check');
           const pr = env.EXPECTED_PR || '';
           const event = env.GITHUB_EVENT_NAME;
+          const backend = env.REQUESTED_BACKEND || 'github';
+          if (!['github', 'aws'].includes(backend) || (backend === 'aws' &&
+              (event !== 'workflow_dispatch' || ['file-observation', 'nix-macos'].includes(env.SOURCE_CHECK)))) {
+            throw new Error('AWS fallback requires trusted manual Linux qualification; native coverage stays on cloud macOS');
+          }
           if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }

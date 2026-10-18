@@ -99,7 +99,7 @@ test("historical reusable path runs read-only cloud checks with source admission
   assert.doesNotMatch(source, /^ {2}(push|pull_request_target):\s*$/m);
   assert.doesNotMatch(source, /statuses: write|contents: write|report-pr:/);
   assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
-  assert.match(source, /'macos-26' \|\| 'ubuntu-24\.04'/);
+  assert.match(source, /'macos-26' \|\|.*'ubuntu-24\.04'/);
   assert.doesNotMatch(
     source,
     /self-hosted|Paseo Isolated CI|paseo-isolated-|PASEO_PUBLIC_CI_COMMISSIONED/,
@@ -753,3 +753,31 @@ for (const [name, mutate] of [
     mutate(f);
     await assert.rejects(runTartSourceGate(f));
   });
+
+// Exercise the actual admission code for the existing manual fallback path.
+test("manual AWS fallback admits the exact trusted Linux candidate with unchanged holds", async () => {
+  const f = tartSourceFixture();
+  f.env.SOURCE_CHECK = "server-tests-ubuntu";
+  f.env.REQUESTED_BACKEND = "aws";
+  f.pull.labels = [{ name: "hold" }];
+  await runTartSourceGate(f);
+  assert.deepEqual(f.pull.labels, [{ name: "hold" }]);
+});
+for (const check of ["file-observation", "nix-macos"]) {
+  test(`AWS fallback refuses native ${check} instead of claiming Linux coverage`, async () => {
+    const f = tartSourceFixture();
+    f.env.REQUESTED_BACKEND = "aws";
+    f.env.SOURCE_CHECK = check;
+    await assert.rejects(runTartSourceGate(f), /native coverage/);
+  });
+}
+test("PR reusable callers cannot request AWS provisioning through manual fallback", async () => {
+  const f = reusablePRFixture();
+  f.env.REQUESTED_BACKEND = "aws";
+  await assert.rejects(runTartSourceGate(f), /trusted manual Linux/);
+});
+test("unknown compute backends fail closed", async () => {
+  const f = tartSourceFixture();
+  f.env.REQUESTED_BACKEND = "local";
+  await assert.rejects(runTartSourceGate(f), /trusted manual Linux/);
+});
