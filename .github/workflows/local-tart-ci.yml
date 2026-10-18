@@ -33,6 +33,7 @@ run-name: Cloud ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_
 permissions:
   contents: read
   pull-requests: read
+  actions: read
 concurrency:
   group: paseo-tart-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}-${{ inputs.check || 'file-observation' }}
   cancel-in-progress: false
@@ -52,21 +53,18 @@ jobs:
           EXPECTED_PR: ${{ github.event.pull_request.number || inputs.pull_request }}
           EXPECTED_HEAD: ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
           GH_TOKEN: ${{ github.token }}
-          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
-          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
           SOURCE_CHECK: ${{ inputs.check || 'file-observation' }}
           EVENT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_HEAD: ${{ github.event.merge_group.head_sha }}
           EVENT_MERGE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          node --input-type=module <<'SOURCE_GATE'
+          node --input-type=module >> "$GITHUB_OUTPUT" <<'SOURCE_GATE'
           const repo = 'SAVAGExSTRATEGIC/paseo';
           const repositoryId = 1382441324;
           const workflow = `${repo}/.github/workflows/local-tart-ci.yml@refs/heads/main`;
           const env = process.env;
           const checks = ["file-observation", "format", "lint", "typecheck", "server-tests-ubuntu", "desktop-tests-ubuntu", "app-tests", "sdk-tests", "playwright-1", "playwright-2", "playwright-3", "playwright-4", "relay-tests", "cli-tests-1", "cli-tests-2", "cli-tests-3", "nix-linux", "nix-hash", "nix-macos", "docker-build"];
           if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
-              env.JOB_WORKFLOW_REF !== workflow || !/^[0-9a-f]{40}$/.test(env.JOB_WORKFLOW_SHA) ||
               !['workflow_dispatch', 'push', 'pull_request_target', 'pull_request', 'merge_group'].includes(env.GITHUB_EVENT_NAME) ||
               !checks.includes(env.SOURCE_CHECK)) throw new Error('Untrusted workflow origin or check');
           const pr = env.EXPECTED_PR || '';
@@ -82,8 +80,22 @@ jobs:
             if (!response.ok) throw new Error('GitHub source read failed');
             return response.json();
           };
+          let workflowSha;
+          if (env.GITHUB_WORKFLOW_REF === workflow) {
+            workflowSha = env.GITHUB_WORKFLOW_SHA;
+          } else {
+            if (!/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID)) throw new Error('Missing immutable run identity');
+            const run = await read(`actions/runs/${env.GITHUB_RUN_ID}`);
+            if (String(run.id) !== env.GITHUB_RUN_ID || run.event !== event) throw new Error('Run origin changed');
+            const references = (run.referenced_workflows || []).filter(reference =>
+              reference.path === `${repo}/.github/workflows/local-tart-ci.yml@main` &&
+              reference.ref === 'refs/heads/main');
+            if (references.length !== 1) throw new Error('Trusted reusable definition is missing or ambiguous');
+            workflowSha = references[0].sha;
+          }
+          if (!/^[0-9a-f]{40}$/.test(workflowSha)) throw new Error('Invalid trusted workflow source');
           const main = await read('commits/main');
-          if (main.sha !== env.JOB_WORKFLOW_SHA) throw new Error('Trusted main changed');
+          if (main.sha !== workflowSha) throw new Error('Trusted main changed');
           if (event === 'merge_group') {
             if (pr !== '' || !/^refs\/heads\/gh-readonly-queue\/main\/[A-Za-z0-9._/-]+$/.test(env.GITHUB_REF) ||
                 env.EXPECTED_HEAD !== env.GITHUB_SHA || env.EXPECTED_HEAD !== env.EVENT_MERGE_HEAD ||
@@ -107,6 +119,7 @@ jobs:
               throw new Error('Source changed or is outside admitted repository');
             }
           }
+          console.log(`workflow_sha=${workflowSha}`);
           SOURCE_GATE
           printf 'head=%s\n' "$EXPECTED_HEAD" >> "$GITHUB_OUTPUT"
       - name: Read fixed check commands from the trusted workflow revision
@@ -114,7 +127,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: SAVAGExSTRATEGIC/paseo
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ steps.source.outputs.workflow_sha }}
           path: .ci-control
           sparse-checkout: scripts/local-tart-check.sh
           sparse-checkout-cone-mode: false

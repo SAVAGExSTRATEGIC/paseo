@@ -30,6 +30,7 @@ function tartSourceFixture() {
   return {
     env: {
       GITHUB_REPOSITORY: repository.full_name,
+      GITHUB_RUN_ID: "42",
       GITHUB_REPOSITORY_ID: String(repository.id),
       GITHUB_REF: "refs/heads/main",
       GITHUB_WORKFLOW_REF:
@@ -74,6 +75,13 @@ async function runTartSourceGate(fixture) {
       return {
         ok: fixture.httpOk,
         json: async () => {
+          if (url.endsWith("actions/runs/42"))
+            return {
+              id: 42,
+              event: fixture.env.GITHUB_EVENT_NAME,
+              referenced_workflows: fixture.referencedWorkflows || [],
+              ...fixture.runOverride,
+            };
           if (url.includes("/git/ref/")) return fixture.mergeRef;
           if (url.endsWith("commits/main")) return fixture.main;
           return fixture.pull;
@@ -130,7 +138,7 @@ for (const [name, mutate] of [
   ["non-main source head", (f) => (f.env.EXPECTED_HEAD = "b".repeat(40))],
   ["main moved after dispatch", (f) => (f.main.sha = "c".repeat(40))],
   ["unreadable main", (f) => (f.httpOk = false)],
-  ["foreign workflow", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
+  ["foreign workflow", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
 ]) {
   test(`Tart main qualification refuses ${name}`, async () => {
     const fixture = tartSourceFixture();
@@ -144,10 +152,10 @@ for (const [name, mutate] of [
 for (const [name, mutate] of [
   ["foreign repository", (f) => (f.env.GITHUB_REPOSITORY = "foreign/paseo")],
   ["recreated repository ID", (f) => (f.env.GITHUB_REPOSITORY_ID = "1")],
-  ["pull request workflow code", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
+  ["pull request workflow code", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
   ["non-main ref", (f) => (f.env.GITHUB_REF = "refs/heads/feature")],
   ["non-manual event", (f) => (f.env.GITHUB_EVENT_NAME = "pull_request")],
-  ["different workflow SHA", (f) => (f.env.JOB_WORKFLOW_SHA = "c".repeat(40))],
+  ["different workflow SHA", (f) => (f.env.GITHUB_WORKFLOW_SHA = "c".repeat(40))],
   ["invalid PR input", (f) => (f.env.EXPECTED_PR = "13;echo invalid")],
   ["branch instead of SHA", (f) => (f.env.EXPECTED_HEAD = "main")],
   ["changed PR head", (f) => (f.pull.head.sha = "c".repeat(40))],
@@ -494,6 +502,13 @@ function reusablePRFixture() {
   f.env.GITHUB_WORKFLOW_REF = "SAVAGExSTRATEGIC/paseo/.github/workflows/ci.yml@refs/pull/13/merge";
   f.env.EXPECTED_HEAD = f.env.GITHUB_SHA = f.pull.merge_commit_sha = "c".repeat(40);
   f.env.SOURCE_CHECK = "typecheck";
+  f.referencedWorkflows = [
+    {
+      path: "SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main",
+      ref: "refs/heads/main",
+      sha: f.main.sha,
+    },
+  ];
   return f;
 }
 
@@ -505,7 +520,10 @@ for (const [name, mutate] of [
   ["caller substitutes another commit", (f) => (f.env.EXPECTED_HEAD = "d".repeat(40))],
   ["PR head moved", (f) => (f.pull.head.sha = "d".repeat(40))],
   ["merge candidate changed", (f) => (f.pull.merge_commit_sha = "d".repeat(40))],
-  ["PR-controlled job definition", (f) => (f.env.JOB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF)],
+  [
+    "PR-controlled job definition",
+    (f) => (f.referencedWorkflows[0].path = f.env.GITHUB_WORKFLOW_REF),
+  ],
   ["arbitrary check command", (f) => (f.env.SOURCE_CHECK = "typecheck; echo bypass")],
 ]) {
   test(`reusable Tart check refuses ${name}`, async () => {
@@ -697,3 +715,41 @@ test("Electron cleanup handles a past crash and waits for a live child", async (
   await waiting;
   assert.equal(done, true);
 });
+
+for (const [name, mutate] of [
+  [
+    "stale reusable SHA",
+    (f) => {
+      f.referencedWorkflows[0].sha = "d".repeat(40);
+    },
+  ],
+  [
+    "missing reusable definition",
+    (f) => {
+      f.referencedWorkflows = [];
+    },
+  ],
+  [
+    "ambiguous reusable definition",
+    (f) => {
+      f.referencedWorkflows.push({ ...f.referencedWorkflows[0] });
+    },
+  ],
+  [
+    "different run",
+    (f) => {
+      f.runOverride = { id: 99 };
+    },
+  ],
+  [
+    "different event",
+    (f) => {
+      f.runOverride = { event: "push" };
+    },
+  ],
+])
+  test(`reusable source metadata rejects ${name}`, async () => {
+    const f = reusablePRFixture();
+    mutate(f);
+    await assert.rejects(runTartSourceGate(f));
+  });
