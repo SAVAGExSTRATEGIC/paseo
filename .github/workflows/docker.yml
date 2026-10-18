@@ -3,6 +3,17 @@ name: Docker
 on:
   push:
     branches: [main]
+    # Keep unknown/build/runtime inputs covered; skip prose and unrelated CI edits.
+    paths:
+      - "**"
+      - "!*.md"
+      - "!docs/**"
+      - "!public-docs/**"
+      - "!.agents/**"
+      - "!.claude/**"
+      - "!.codex/**"
+      - "!.github/**"
+      - ".github/workflows/docker.yml"
     tags:
       - "v*"
   workflow_dispatch:
@@ -47,6 +58,9 @@ jobs:
       publish_tags: ${{ steps.values.outputs.publish_tags }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Check packaging trigger coverage
+        run: node --test scripts/packaging-workflow.test.mjs
 
       - id: values
         env:
