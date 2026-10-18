@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { chromium } from "playwright";
 import { runAppearanceFontSizeRegression } from "./appearance-font-size.electron.mjs";
 import { runSettingsMemoryRegression } from "./settings-memory.electron.mjs";
+import { createIsolatedLoginShell } from "./isolated-login-shell.mjs";
 
 import { seedPluginLinks, runPluginLinksRegression } from "./plugin-links.electron.mjs";
 
@@ -1051,6 +1052,8 @@ async function main() {
       '#!/bin/sh\nprintf "%s\\n" "$1" >> "$PASEO_TEST_EXTERNAL_OPEN_LOG"\n',
       { mode: 0o755 },
     );
+    const testLoginShell =
+      process.platform === "linux" ? createIsolatedLoginShell(openerDirectory) : null;
     const commonEnv = {
       ...process.env,
       PATH: `${openerDirectory}${path.delimiter}${process.env.PATH}`,
@@ -1113,6 +1116,7 @@ async function main() {
         cwd: rootDir,
         env: {
           ...commonEnv,
+          ...(testLoginShell ? { SHELL: testLoginShell } : {}),
           EXPO_PORT: String(expoPort),
           EXPO_DEV_URL: `http://localhost:${expoPort}`,
           PASEO_ELECTRON_REMOTE_DEBUGGING_PORT: String(cdpPort),
