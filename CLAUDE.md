@@ -208,3 +208,5 @@ Ordinary CI never binds paid model API keys. Keep the existing subscription OAut
 The retained PR18 branch and independent fixes remain owned by their source owner. Its old canceled event can be stale after main moves; do not force a stale event green, remove holds, restore local routing or rewrite that source merely to obtain a result. Use a fresh eligible exact-source event through the normal protected process.
 
 <!-- /paseo-cloud-ci:20261017 -->
+
+Linux desktop browser E2E uses a private test-only Bash wrapper with system/user profile loading disabled so the fixture-owned external-link recorder remains on PATH after Electron login-environment initialization. The real Electron handoff and full browser assertions still run; product shell behavior and host profiles are unchanged.

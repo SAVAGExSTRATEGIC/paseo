@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, relative as relativePath } from "node:path";
 import test from "node:test";
+import { createIsolatedLoginShell } from "../packages/desktop/e2e/isolated-login-shell.mjs";
 
 const repoRoot = new URL("../", import.meta.url);
 const ciWorkflowPath = new URL(".github/workflows/ci.yml", repoRoot);
@@ -878,3 +879,61 @@ test("every ordinary check refuses invalid dispatch before checkout rather than 
   for (const id of ["server-tests-windows", "desktop-tests-windows"])
     assert.match(jobs.get(id).join("\n"), /runs-on: windows-latest/);
 });
+
+test(
+  "desktop browser fixture preserves real external-opener handoff through login initialization",
+  { skip: process.platform === "win32" },
+  () => {
+    const directory = mkdtempSync(join(tmpdir(), "paseo-e2e-login-shell-"));
+    try {
+      const commands = join(directory, "commands");
+      mkdirSync(commands);
+      const recorder = join(directory, "external-opens.txt");
+      const profileMarker = join(directory, "profile-loaded.txt");
+      writeFileSync(
+        join(directory, ".bash_profile"),
+        'printf bad > "$PASEO_PROFILE_MARKER"; export PATH=/invalid-host-profile\n',
+      );
+      writeFileSync(
+        join(commands, "xdg-open"),
+        '#!/bin/sh\nprintf "%s\n" "$1" >> "$PASEO_TEST_EXTERNAL_OPEN_LOG"\n',
+        { mode: 0o700 },
+      );
+      const shell = createIsolatedLoginShell(commands);
+      const result = spawnSync(
+        shell,
+        ["-i", "-l", "-c", 'xdg-open "$PASEO_TEST_URL"; xdg-open "$PASEO_TEST_URL"'],
+        {
+          encoding: "utf8",
+          timeout: 5000,
+          env: {
+            ...process.env,
+            HOME: directory,
+            PATH: `${commands}:/usr/bin:/bin`,
+            PASEO_TEST_EXTERNAL_OPEN_LOG: recorder,
+            PASEO_PROFILE_MARKER: profileMarker,
+            PASEO_TEST_URL: "http://127.0.0.1:43210/",
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(readFileSync(recorder, "utf8").trim().split("\n"), [
+        "http://127.0.0.1:43210/",
+        "http://127.0.0.1:43210/",
+      ]);
+      assert.equal(readdirSync(directory).includes("profile-loaded.txt"), false);
+      assert.equal(statSync(shell).mode & 0o777, 0o700);
+      const browserFixture = readFileSync(
+        new URL("packages/desktop/e2e/browser-tabs.e2e.mjs", repoRoot),
+        "utf8",
+      );
+      assert.match(
+        browserFixture,
+        /process\.platform === "linux" \? createIsolatedLoginShell\(openerDirectory\)/,
+      );
+      assert.match(browserFixture, /testLoginShell \? \{ SHELL: testLoginShell \}/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
