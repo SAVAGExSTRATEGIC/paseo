@@ -2792,6 +2792,8 @@ export class Session {
 
   private dispatchAgentConfigMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
+      case "refresh_agent_tools_request":
+        return this.handleRefreshAgentToolsRequest(msg);
       case "set_agent_mode_request":
         return this.agentConfigSession.handleSetAgentModeRequest(msg);
       case "set_agent_model_request":
@@ -4601,6 +4603,38 @@ export class Session {
           timestamp: new Date(),
           type: "error",
           content: `Failed to import agent: ${message}`,
+        },
+      });
+    }
+  }
+
+  private async handleRefreshAgentToolsRequest(
+    msg: Extract<SessionInboundMessage, { type: "refresh_agent_tools_request" }>,
+  ): Promise<void> {
+    try {
+      const result = await this.agentManager.refreshMcpTools(msg.agentId, {
+        serverName: msg.serverName,
+        ...(msg.serverConfig ? { serverConfig: msg.serverConfig } : {}),
+      });
+      this.emit({
+        type: "status",
+        payload: {
+          status: "agent_tools_refreshed",
+          agentId: msg.agentId,
+          requestId: msg.requestId,
+          ...result,
+        },
+      });
+    } catch {
+      // Configuration/native errors can include credentials; do not broadcast them.
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: msg.requestId,
+          requestType: msg.type,
+          code: "agent_tools_refresh_failed",
+          error:
+            "Tool refresh unavailable or incomplete. No restart attempted; reconcile provider status before retry.",
         },
       });
     }

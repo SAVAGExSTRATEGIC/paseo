@@ -1834,6 +1834,14 @@ export const ImportAgentRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+export const RefreshAgentToolsRequestMessageSchema = z.object({
+  type: z.literal("refresh_agent_tools_request"),
+  agentId: z.string(),
+  requestId: z.string(),
+  serverName: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/),
+  serverConfig: McpServerConfigSchema.optional(),
+});
+
 export const RefreshAgentRequestMessageSchema = z.object({
   type: z.literal("refresh_agent_request"),
   agentId: z.string(),
@@ -3281,6 +3289,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ResumeAgentRequestMessageSchema,
   ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
+  RefreshAgentToolsRequestMessageSchema,
   CancelAgentRequestMessageSchema,
   ShutdownServerRequestMessageSchema,
   RestartServerRequestMessageSchema,
@@ -3822,6 +3831,16 @@ export const AgentRefreshedStatusPayloadSchema = z
   })
   .extend(AgentStatusWithTimelineSchema.shape);
 
+export const AgentToolsRefreshedStatusPayloadSchema = z.object({
+  status: z.literal("agent_tools_refreshed"),
+  agentId: z.string(),
+  requestId: z.string(),
+  serverName: z.string(),
+  state: z.enum(["queued", "connected"]),
+  toolNames: z.array(z.string()),
+  adoption: z.literal("next_model_request"),
+});
+
 export const RestartRequestedStatusPayloadSchema = z.object({
   status: z.literal("restart_requested"),
   clientId: z.string(),
@@ -3858,6 +3877,7 @@ export const KnownStatusPayloadSchema = z.discriminatedUnion("status", [
   AgentCreateFailedStatusPayloadSchema,
   AgentResumedStatusPayloadSchema,
   AgentRefreshedStatusPayloadSchema,
+  AgentToolsRefreshedStatusPayloadSchema,
   ShutdownRequestedStatusPayloadSchema,
   RestartRequestedStatusPayloadSchema,
   DaemonConfigChangedStatusPayloadSchema,

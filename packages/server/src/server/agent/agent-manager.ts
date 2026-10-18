@@ -2365,6 +2365,16 @@ export class AgentManager {
     await this.unarchiveSnapshot(matched.id);
   }
 
+  async refreshMcpTools(
+    agentId: string,
+    input: import("./mcp-tool-refresh.js").McpToolsRefreshInput,
+  ) {
+    // No ensureAgentLoaded, workspace restore, unarchive, reload or model turn.
+    const agent = this.requireSessionAgent(agentId);
+    if (!agent.session.refreshMcpTools) throw new Error("mcp_refresh_unsupported");
+    return agent.session.refreshMcpTools(input);
+  }
+
   async updateAgentMetadata(
     agentId: string,
     updates: {

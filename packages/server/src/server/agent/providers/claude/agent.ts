@@ -1,3 +1,9 @@
+import {
+  McpToolsRefreshLane,
+  refreshClaudeMcpTools,
+  type McpToolsRefreshInput,
+  type McpToolsRefreshResult,
+} from "../../mcp-tool-refresh.js";
 import { validateProviderOptions } from "../../provider-options.js";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -2144,6 +2150,24 @@ class ClaudeAgentSession implements AgentSession {
   private readonly queryFactory?: ClaudeQueryFactory;
   private readonly resolveBinary: () => Promise<string>;
   private query: Query | null = null;
+  private readonly mcpRefreshLane = new McpToolsRefreshLane();
+  refreshMcpTools(input: McpToolsRefreshInput): Promise<McpToolsRefreshResult> {
+    if (this.closed || !this.query || this.queryRestartNeeded)
+      return Promise.reject(new Error("mcp_refresh_runtime_not_live"));
+    const query = this.query;
+    if (typeof query.setMcpServers !== "function" || typeof query.mcpServerStatus !== "function")
+      return Promise.reject(new Error("mcp_refresh_unsupported"));
+    return this.mcpRefreshLane.run(input, async () => {
+      const result = await refreshClaudeMcpTools(query, this.config.mcpServers ?? {}, input);
+      if (input.serverConfig)
+        this.config.mcpServers = {
+          ...this.config.mcpServers,
+          [input.serverName]: input.serverConfig,
+        };
+      return result;
+    });
+  }
+
   private readonly harnessEnvironment: Record<string, string>;
   private readonly usageSessionKey = randomUUID();
   private childProcess: ChildProcess | null = null;

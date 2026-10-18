@@ -1,3 +1,9 @@
+import {
+  McpToolsRefreshLane,
+  refreshCodexMcpTools,
+  type McpToolsRefreshInput,
+  type McpToolsRefreshResult,
+} from "../mcp-tool-refresh.js";
 import { validateProviderOptions } from "../provider-options.js";
 import {
   getAgentStreamEventTurnId,
@@ -3452,6 +3458,15 @@ export class CodexAppServerAgentSession implements AgentSession {
   } | null = null;
   private client: CodexAppServerClient | null = null;
   private threadRollbackAvailable = true;
+  private readonly mcpRefreshLane = new McpToolsRefreshLane();
+  refreshMcpTools(input: McpToolsRefreshInput): Promise<McpToolsRefreshResult> {
+    if (this.closed || !this.client || !this.currentThreadId)
+      return Promise.reject(new Error("mcp_refresh_runtime_not_live"));
+    const client = this.client,
+      threadId = this.currentThreadId;
+    return this.mcpRefreshLane.run(input, () => refreshCodexMcpTools(client, threadId, input));
+  }
+
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private nextTurnOrdinal = 0;
   private activeForegroundTurnId: string | null = null;
