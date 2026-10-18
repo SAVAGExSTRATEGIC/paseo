@@ -317,3 +317,157 @@ test("existing router reserves decisions so uncommissioned input cannot fall thr
   );
   assert.equal(parseSlackCommand("status").kind, "status");
 });
+
+const reservedVariants = [
+  "decision",
+  "decision answer",
+  " decision answer bad yes",
+  "\t\ndecision\tanswer bad yes",
+  "decision\nanswer bad yes",
+  "host=primary decision answer bad yes",
+  "project=fixture decision answer bad yes",
+  "host=primary project=fixture decision answer bad yes",
+  "project=fixture\thost=primary\ndecision\tanswer bad yes",
+  " \thost=primary\n project=fixture\t decision\nanswer bad yes",
+  "host=INVALID decision answer bad yes",
+  "host= decision answer bad yes",
+  "host=primary host=secondary decision answer bad yes",
+  "host=primary decision ???",
+];
+async function actualRouterFixture() {
+  const original = process.env.DQ_PARSER_PREDECESSOR_FILE
+    ? await readFile(process.env.DQ_PARSER_PREDECESSOR_FILE, "utf8")
+    : await readFile(new URL("./commands.ts", import.meta.url), "utf8");
+  const commandCode = original.replace(
+      'from "./conversations.js"',
+      `from ${JSON.stringify(storeURL)}`,
+    ),
+    commandURL = uri(commandCode);
+  const daemon = await readFile(
+      new URL("./daemon.ts", import.meta.url),
+      "utf8",
+    ),
+    stable = daemon.match(/export function stableOperationId[\s\S]*?\n}/)?.[0];
+  assert.ok(stable);
+  const modules = {
+    "./commands.js": commandURL,
+    "./conversations.js": storeURL,
+    "./daemon.js": uri(
+      'import { createHash } from "node:crypto"; export class SlackDaemon {}\n' +
+        stable,
+    ),
+    "./output.js": uri(
+      await readFile(new URL("./output.ts", import.meta.url), "utf8"),
+    ),
+    "./questions.js": uri(
+      (await readFile(new URL("./questions.ts", import.meta.url), "utf8"))
+        .replace('from "zod"', `from ${zod}`)
+        .replace(
+          'from "./conversations.js"',
+          `from ${JSON.stringify(storeURL)}`,
+        ),
+    ),
+  };
+  let runner = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
+  for (const [name, url] of Object.entries(modules))
+    runner = runner.replace(`from "${name}"`, `from ${JSON.stringify(url)}`);
+  return {
+    ...(await import(commandURL)),
+    ...(await import(uri(runner))),
+    ...(await import(storeURL)),
+  };
+}
+test("decision reservation survives selectors, whitespace and malformed decision syntax without rewriting input", async () => {
+  const { parseSlackCommand } = await actualRouterFixture();
+  for (const text of reservedVariants) {
+    const original = text;
+    assert.equal(
+      parseSlackCommand(text).kind,
+      "decision-unconfigured",
+      JSON.stringify(text),
+    );
+    assert.equal(text, original);
+  }
+  for (const text of [
+    "Discuss a decision later",
+    "decisioning is not a command",
+    "host=primary build a decision report",
+    "  ordinary body with spaces  ",
+  ]) {
+    const parsed = parseSlackCommand(text);
+    assert.equal(parsed.kind, "prompt");
+    assert.equal(
+      parsed.text,
+      text.startsWith("host=") ? "build a decision report" : text,
+    );
+  }
+});
+test("actual runner tick and real persisted journal refuse every reserved variant with zero daemon/create/prompt/send calls", async () => {
+  const { ConversationRunner, ConversationStore } = await actualRouterFixture(),
+    { mkdtemp, rm } = await import("node:fs/promises"),
+    { tmpdir } = await import("node:os"),
+    { join } = await import("node:path");
+  for (const text of reservedVariants) {
+    const directory = await mkdtemp(join(tmpdir(), "slack-decision-router-")),
+      controller = new AbortController(),
+      calls = [],
+      failures = [];
+    try {
+      const target = {
+          host: "primary",
+          project: "fixture",
+          projectId: "project",
+          cwd: "/fixture",
+          serverId: "srv",
+        },
+        runnerPolicy = { ...policy, targets: [target] },
+        store = await ConversationStore.open(directory, runnerPolicy);
+      await store.accept({
+        id: "Ev-reserved",
+        teamId: "T1",
+        userId: "U1",
+        channelId: "C1",
+        rootTs: "1.1",
+        messageTs: "1.2",
+        isDM: false,
+        text,
+      });
+      const daemon = new Proxy(
+        {},
+        {
+          get(_target, name) {
+            return async () => {
+              calls.push(String(name));
+              throw Error("Unexpected daemon/provider access");
+            };
+          },
+        },
+      );
+      const instance = new ConversationRunner({
+        config: { policy: runnerPolicy },
+        store,
+        hosts: new Map([["primary", daemon]]),
+        signal: controller.signal,
+        failure: (code) => failures.push(code),
+      });
+      await instance.tick();
+      assert.deepEqual(calls, [], JSON.stringify(text));
+      assert.equal(store.pending().length, 0, JSON.stringify(text));
+      assert.deepEqual(store.bindings(), []);
+      assert.deepEqual(failures, ["slack_operation_refused"]);
+      const outputs = store.deliveries();
+      assert.equal(outputs.length, 1);
+      assert.match(outputs[0].text, /not commissioned/);
+      assert.equal(outputs[0].phase, "pending");
+      const journal = JSON.parse(
+        await readFile(join(directory, "conversations.json"), "utf8"),
+      );
+      assert.equal(journal.intake[0].text, text);
+      assert.equal(journal.intake[0].messageTs, "1.2");
+      assert.equal(journal.intake[0].phase, "completed");
+    } finally {
+      controller.abort();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
