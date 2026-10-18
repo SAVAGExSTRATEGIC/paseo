@@ -120,6 +120,18 @@ function boundBytes(file: string, root: string, uid: number) {
     closeSync(fd);
   }
 }
+function receiverJournal(
+  config: { dataDirectory?: unknown },
+  policy: SlackJournalPolicy,
+) {
+  if (
+    typeof config.dataDirectory !== "string" ||
+    realpathSync(config.dataDirectory) !== realpathSync(policy.journalRoot) ||
+    path.resolve(policy.journalPath) !==
+      path.join(realpathSync(policy.journalRoot), "conversations.json")
+  )
+    throw Error("Slack receiver/journal identity mismatch");
+}
 // Trust boundary: the existing authenticated Socket Mode receiver's private
 // journal plus exact operator-commissioned config/admissions. Not a Slack
 // cryptographic attestation or isolation from a malicious same-UID process.
@@ -140,6 +152,7 @@ export function readAcceptedSlackSource(
   const config = JSON.parse(configBytes.toString("utf8")),
     receiver = SlackPolicySchema.parse(config.policy),
     b = policy.binding;
+  receiverJournal(config, policy);
   if (
     config.appId !== policy.appId ||
     receiver.teamId !== b.teamId ||
@@ -280,6 +293,7 @@ export function createCanonicalSlackPort(
       )
         throw Error("Slack receiver configuration changed");
       const config = JSON.parse(bytes.toString("utf8"));
+      receiverJournal(config, policy);
       if (config.appId !== policy.appId || b.disclosureApproved !== true)
         throw Error("Uncommissioned Slack disclosure");
       authorizeMessage(SlackPolicySchema.parse(config.policy), {

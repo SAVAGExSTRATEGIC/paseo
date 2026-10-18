@@ -121,7 +121,11 @@ async function fixture() {
       },
     };
   const configBytes = Buffer.from(
-    JSON.stringify({ appId: "A1", policy: receiver }),
+    JSON.stringify({
+      appId: "A1",
+      policy: receiver,
+      dataDirectory: journalRoot,
+    }),
   );
   await fs.writeFile(configPath, configBytes, { mode: 0o600 });
   const journalStore = await ConversationStore.open(journalRoot, receiver),
@@ -403,5 +407,24 @@ test("changed receiver config bytes and a different OS evidence owner are denied
       /configuration changed/,
     );
     await assert.rejects(f.port.commit(f.request));
+    assert.equal(f.writes(), 0);
+  }));
+
+test("receiver config cannot authenticate a different accepted journal even under a newly pinned config digest", () =>
+  use(async (f) => {
+    const other = join(f.root, "other-receiver");
+    await fs.mkdir(other);
+    const config = JSON.parse(await fs.readFile(f.policy.configPath, "utf8"));
+    config.dataDirectory = other;
+    const bytes = Buffer.from(JSON.stringify(config));
+    await fs.writeFile(f.policy.configPath, bytes);
+    const policy = {
+      ...f.policy,
+      configSha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+    assert.throws(
+      () => readAcceptedSlackSource(policy, "Ev1"),
+      /receiver\/journal identity/,
+    );
     assert.equal(f.writes(), 0);
   }));
