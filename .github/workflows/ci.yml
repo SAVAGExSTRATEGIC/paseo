@@ -7,6 +7,20 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+    inputs:
+      backend:
+        description: Linux execution backend; automatic CI stays on standard GitHub
+        type: choice
+        default: github
+        options: [github, aws]
+      expected_sha:
+        description: Exact reviewed commit; required for AWS fallback
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -20,7 +34,7 @@ env:
 jobs:
   changes:
     name: changes
-    runs-on: ubuntu-latest
+    runs-on: &linux_runner ${{ github.event_name == 'workflow_dispatch' && inputs.backend == 'aws' && inputs.expected_sha == github.sha && github.repository == 'SAVAGExSTRATEGIC/paseo' && format('runs-on={0}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id) || 'ubuntu-24.04' }}
     permissions:
       contents: read
       pull-requests: read
@@ -37,9 +51,36 @@ jobs:
       relay: ${{ steps.filter.outputs.relay }}
       cli: ${{ steps.filter.outputs.cli }}
     steps:
+      - &admit_cloud_source
+        name: Admit exact cloud source before executing candidate code
+        shell: bash
+        env:
+          CI_BACKEND: ${{ inputs.backend || 'github' }}
+          EXPECTED_CI_SHA: ${{ inputs.expected_sha }}
+        run: |
+          # CLOUD_SOURCE_GATE_BEGIN
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 64
+          case "$CI_BACKEND" in github|aws) ;; *) exit 64 ;; esac
+          if [ "$CI_BACKEND" = aws ]; then
+            [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || exit 64
+            [ "$GITHUB_REPOSITORY" = SAVAGExSTRATEGIC/paseo ] || exit 64
+            [ -n "$EXPECTED_CI_SHA" ] || exit 64
+          fi
+          if [ -n "$EXPECTED_CI_SHA" ]; then
+            [[ "$EXPECTED_CI_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 64
+            [ "$EXPECTED_CI_SHA" = "$GITHUB_SHA" ] || exit 64
+          fi
+          printf 'Exact CI source: %s; backend: %s\n' "$GITHUB_SHA" "$CI_BACKEND"
+          # CLOUD_SOURCE_GATE_END
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+
+      - &verify_checkout
+        name: Verify exact checkout identity
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - uses: actions/setup-node@v4
         with:
@@ -58,9 +99,12 @@ jobs:
     name: format
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.format != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -77,9 +121,12 @@ jobs:
     name: lint
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -102,9 +149,12 @@ jobs:
     name: typecheck
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.quality != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -136,11 +186,14 @@ jobs:
     name: server-tests (ubuntu-latest)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false' || needs.changes.outputs.hub != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps: &server_test_steps
+      - *admit_cloud_source
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -188,7 +241,10 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.server != 'false') }}
     runs-on: macos-14
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -213,12 +269,15 @@ jobs:
     name: desktop-tests (ubuntu-latest)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.desktop != 'false') }}
-    runs-on: ubuntu-24.04
+    runs-on: *linux_runner
     timeout-minutes: 30
     permissions:
       contents: read
     steps: &desktop_test_steps
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -298,9 +357,12 @@ jobs:
     name: app-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.app != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -324,9 +386,12 @@ jobs:
     name: sdk-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.sdk != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -361,12 +426,15 @@ jobs:
     name: playwright (shard 1/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PLAYWRIGHT_SHARD: "1/4"
       PLAYWRIGHT_ARTIFACT: "1"
     steps: &playwright_test_steps
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -410,7 +478,7 @@ jobs:
     name: playwright (shard 2/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PLAYWRIGHT_SHARD: "2/4"
       PLAYWRIGHT_ARTIFACT: "2"
@@ -420,7 +488,7 @@ jobs:
     name: playwright (shard 3/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PLAYWRIGHT_SHARD: "3/4"
       PLAYWRIGHT_ARTIFACT: "3"
@@ -430,7 +498,7 @@ jobs:
     name: playwright (shard 4/4)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.browser != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PLAYWRIGHT_SHARD: "4/4"
       PLAYWRIGHT_ARTIFACT: "4"
@@ -440,9 +508,12 @@ jobs:
     name: relay-tests
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.relay != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     steps:
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -462,7 +533,7 @@ jobs:
     name: cli-tests (shard 1/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
       PASEO_DICTATION_ENABLED: "0"
@@ -470,7 +541,10 @@ jobs:
       PASEO_CLI_TEST_SHARD: "1"
       PASEO_CLI_TEST_SHARD_TOTAL: "3"
     steps: &cli_test_steps
+      - *admit_cloud_source
       - uses: actions/checkout@v4
+
+      - *verify_checkout
 
       - uses: actions/setup-node@v4
         with:
@@ -497,7 +571,7 @@ jobs:
     name: cli-tests (shard 2/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
       PASEO_DICTATION_ENABLED: "0"
@@ -510,7 +584,7 @@ jobs:
     name: cli-tests (shard 3/3)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.full != 'false' || needs.changes.outputs.cli != 'false') }}
-    runs-on: ubuntu-latest
+    runs-on: *linux_runner
     env:
       PASEO_LOCAL_SPEECH_AUTO_DOWNLOAD: "0"
       PASEO_DICTATION_ENABLED: "0"

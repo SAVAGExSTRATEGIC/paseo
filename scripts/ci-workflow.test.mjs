@@ -787,3 +787,94 @@ test("reusable compatibility does not require permissions absent from retained P
   const s = readFileSync(tartWorkflowPath, "utf8");
   assert.doesNotMatch(s, /actions: read|id-token: write|statuses: write/);
 });
+
+function cloudSourceShell() {
+  const source = readFileSync(ciWorkflowPath, "utf8");
+  const match = /# CLOUD_SOURCE_GATE_BEGIN\n([\s\S]*?)# CLOUD_SOURCE_GATE_END/.exec(source);
+  assert.ok(match, "exact-source guard must be part of the executed workflow");
+  return match[1]
+    .split("\n")
+    .map((line) => line.trimStart())
+    .join("\n");
+}
+
+function runCloudSource(overrides = {}) {
+  return spawnSync("bash", ["-c", cloudSourceShell()], {
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      GITHUB_SHA: "a".repeat(40),
+      GITHUB_REPOSITORY: "SAVAGExSTRATEGIC/paseo",
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      CI_BACKEND: "aws",
+      EXPECTED_CI_SHA: "a".repeat(40),
+      ...overrides,
+    },
+  });
+}
+
+test("ordinary manual AWS fallback admits only exact reviewed source without changing automatic GitHub", () => {
+  assert.equal(runCloudSource().status, 0);
+  for (const event of ["push", "pull_request", "merge_group"]) {
+    assert.equal(
+      runCloudSource({ GITHUB_EVENT_NAME: event, CI_BACKEND: "github", EXPECTED_CI_SHA: "" })
+        .status,
+      0,
+    );
+  }
+  const source = readFileSync(ciWorkflowPath, "utf8");
+  assert.match(source, /default: github/);
+  assert.match(source, /inputs\.expected_sha == github\.sha/);
+  assert.match(source, /4cpu-linux-x64\/volume=80gb:gp3:125mbs:3000iops\/image=ubuntu24-full-x64/);
+  assert.match(source, /\|\| 'ubuntu-24\.04'/);
+  assert.doesNotMatch(
+    source,
+    /self-hosted|savage-local|paseo-isolated|statuses: write|checks: write|contents: write/,
+  );
+  assert.doesNotMatch(source, /OPENAI_API_KEY|OPENROUTER_API_KEY/);
+});
+
+for (const [name, overrides] of [
+  ["missing expected source", { EXPECTED_CI_SHA: "" }],
+  ["branch instead of source", { EXPECTED_CI_SHA: "main" }],
+  ["changed source", { EXPECTED_CI_SHA: "b".repeat(40) }],
+  ["invalid event source", { GITHUB_SHA: "main" }],
+  ["foreign AWS repository", { GITHUB_REPOSITORY: "foreign/paseo" }],
+  ["AWS requested by automatic event", { GITHUB_EVENT_NAME: "pull_request" }],
+  ["retired local backend", { CI_BACKEND: "local" }],
+  ["unqualified runner backend", { CI_BACKEND: "larger" }],
+  [
+    "wrong explicitly pinned GitHub source",
+    { CI_BACKEND: "github", EXPECTED_CI_SHA: "b".repeat(40) },
+  ],
+]) {
+  test(`ordinary cloud admission refuses ${name}`, () => {
+    assert.notEqual(runCloudSource(overrides).status, 0);
+  });
+}
+
+test("every ordinary check refuses invalid dispatch before checkout rather than reporting skipped success", () => {
+  const jobs = jobBlocks(readFileSync(ciWorkflowPath, "utf8"));
+  const anchors = new Map();
+  for (const lines of jobs.values()) {
+    const body = lines.join("\n");
+    const anchor = /steps: &([a-z_]+)/.exec(body);
+    if (anchor) anchors.set(anchor[1], body);
+  }
+  for (const jobId of ["changes", ...gatedCiJobs.keys()]) {
+    const body = jobs.get(jobId).join("\n");
+    const alias = /steps: \*([a-z_]+)/.exec(body);
+    const steps = alias ? anchors.get(alias[1]) : body;
+    assert.ok(steps, jobId);
+    assert.match(steps, /- [*&]admit_cloud_source/, jobId);
+    assert.ok(steps.indexOf("admit_cloud_source") < steps.indexOf("uses: actions/checkout"), jobId);
+    assert.match(steps, /- [*&]verify_checkout/, jobId);
+    assert.ok(steps.indexOf("verify_checkout") > steps.indexOf("uses: actions/checkout"), jobId);
+    if (!/^(server-tests-macos|server-tests-windows|desktop-tests-windows)$/.test(jobId)) {
+      assert.match(body, /runs-on: (?:&linux_runner|\*linux_runner)/, jobId);
+    }
+  }
+  assert.match(jobs.get("server-tests-macos").join("\n"), /runs-on: macos-14/);
+  for (const id of ["server-tests-windows", "desktop-tests-windows"])
+    assert.match(jobs.get(id).join("\n"), /runs-on: windows-latest/);
+});
