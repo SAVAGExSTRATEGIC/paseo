@@ -30,6 +30,7 @@ function tartSourceFixture() {
   return {
     env: {
       GITHUB_REPOSITORY: repository.full_name,
+      GITHUB_RUN_ID: "42",
       GITHUB_REPOSITORY_ID: String(repository.id),
       GITHUB_REF: "refs/heads/main",
       GITHUB_WORKFLOW_REF:
@@ -69,11 +70,19 @@ async function runTartSourceGate(fixture) {
     async (url, options) => {
       fixture.requests.push(url);
       assert.match(url, /^https:\/\/api\.github\.com\/repos\/SAVAGExSTRATEGIC\/paseo\//);
-      assert.equal(options.headers.Authorization, "Bearer public-test-fixture");
+      if (url.includes("/actions/runs/")) assert.equal(options.headers.Authorization, undefined);
+      else assert.equal(options.headers.Authorization, "Bearer public-test-fixture");
       assert.ok(options.signal);
       return {
         ok: fixture.httpOk,
         json: async () => {
+          if (url.endsWith("actions/runs/42"))
+            return {
+              id: 42,
+              event: fixture.env.GITHUB_EVENT_NAME,
+              referenced_workflows: fixture.referencedWorkflows || [],
+              ...fixture.runOverride,
+            };
           if (url.includes("/git/ref/")) return fixture.mergeRef;
           if (url.endsWith("commits/main")) return fixture.main;
           return fixture.pull;
@@ -84,16 +93,18 @@ async function runTartSourceGate(fixture) {
   );
 }
 
-test("Tart reusable lane is read-only, gated, scoped to its own group, and checks source before checkout", () => {
+test("historical reusable path runs read-only cloud checks with source admission before checkout", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
   assert.match(source, /workflow_dispatch:/);
   assert.match(source, /workflow_call:/);
   assert.doesNotMatch(source, /^ {2}(push|pull_request_target):\s*$/m);
   assert.doesNotMatch(source, /statuses: write|contents: write|report-pr:/);
   assert.doesNotMatch(source, /^ {2}pull_request:\s*$/m);
-  assert.match(source, /vars\.PASEO_PUBLIC_CI_COMMISSIONED == 'true'/);
-  assert.match(source, /group: Paseo Isolated CI/);
-  assert.match(source, /paseo-isolated-macos/);
+  assert.match(source, /'macos-26' \|\|.*'ubuntu-24\.04'/);
+  assert.doesNotMatch(
+    source,
+    /self-hosted|Paseo Isolated CI|paseo-isolated-|PASEO_PUBLIC_CI_COMMISSIONED/,
+  );
   assert.doesNotMatch(
     source.split("  report-pr:")[0],
     /ubuntu-latest|windows-latest|savage-local-actions/,
@@ -128,7 +139,7 @@ for (const [name, mutate] of [
   ["non-main source head", (f) => (f.env.EXPECTED_HEAD = "b".repeat(40))],
   ["main moved after dispatch", (f) => (f.main.sha = "c".repeat(40))],
   ["unreadable main", (f) => (f.httpOk = false)],
-  ["foreign workflow", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
+  ["foreign workflow", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
 ]) {
   test(`Tart main qualification refuses ${name}`, async () => {
     const fixture = tartSourceFixture();
@@ -142,10 +153,10 @@ for (const [name, mutate] of [
 for (const [name, mutate] of [
   ["foreign repository", (f) => (f.env.GITHUB_REPOSITORY = "foreign/paseo")],
   ["recreated repository ID", (f) => (f.env.GITHUB_REPOSITORY_ID = "1")],
-  ["pull request workflow code", (f) => (f.env.JOB_WORKFLOW_REF += "/foreign")],
+  ["pull request workflow code", (f) => (f.env.GITHUB_WORKFLOW_REF += "/foreign")],
   ["non-main ref", (f) => (f.env.GITHUB_REF = "refs/heads/feature")],
   ["non-manual event", (f) => (f.env.GITHUB_EVENT_NAME = "pull_request")],
-  ["different workflow SHA", (f) => (f.env.JOB_WORKFLOW_SHA = "c".repeat(40))],
+  ["different workflow SHA", (f) => (f.env.GITHUB_WORKFLOW_SHA = "c".repeat(40))],
   ["invalid PR input", (f) => (f.env.EXPECTED_PR = "13;echo invalid")],
   ["branch instead of SHA", (f) => (f.env.EXPECTED_HEAD = "main")],
   ["changed PR head", (f) => (f.pull.head.sha = "c".repeat(40))],
@@ -492,6 +503,13 @@ function reusablePRFixture() {
   f.env.GITHUB_WORKFLOW_REF = "SAVAGExSTRATEGIC/paseo/.github/workflows/ci.yml@refs/pull/13/merge";
   f.env.EXPECTED_HEAD = f.env.GITHUB_SHA = f.pull.merge_commit_sha = "c".repeat(40);
   f.env.SOURCE_CHECK = "typecheck";
+  f.referencedWorkflows = [
+    {
+      path: "SAVAGExSTRATEGIC/paseo/.github/workflows/local-tart-ci.yml@main",
+      ref: "refs/heads/main",
+      sha: f.main.sha,
+    },
+  ];
   return f;
 }
 
@@ -503,7 +521,10 @@ for (const [name, mutate] of [
   ["caller substitutes another commit", (f) => (f.env.EXPECTED_HEAD = "d".repeat(40))],
   ["PR head moved", (f) => (f.pull.head.sha = "d".repeat(40))],
   ["merge candidate changed", (f) => (f.pull.merge_commit_sha = "d".repeat(40))],
-  ["PR-controlled job definition", (f) => (f.env.JOB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF)],
+  [
+    "PR-controlled job definition",
+    (f) => (f.referencedWorkflows[0].path = f.env.GITHUB_WORKFLOW_REF),
+  ],
   ["arbitrary check command", (f) => (f.env.SOURCE_CHECK = "typecheck; echo bypass")],
 ]) {
   test(`reusable Tart check refuses ${name}`, async () => {
@@ -559,7 +580,7 @@ for (const check of ["nix-linux", "nix-hash", "nix-macos", "docker-build"]) {
 
 test("packaging jobs preserve native Mac coverage and cannot publish or upload build records", () => {
   const source = readFileSync(tartWorkflowPath, "utf8");
-  assert.match(source, /inputs.check != 'nix-macos' && 'Linux'/);
+  assert.match(source, /inputs.check == 'nix-macos'\) && 'macos-26'/);
   assert.match(source, /platforms: linux\/amd64,linux\/arm64/);
   assert.match(source, /DOCKER_BUILD_RECORD_UPLOAD: "false"/);
   assert.match(source, /push: false/);
@@ -694,4 +715,75 @@ test("Electron cleanup handles a past crash and waits for a live child", async (
   child.emit("exit", 0, null);
   await waiting;
   assert.equal(done, true);
+});
+
+for (const [name, mutate] of [
+  [
+    "stale reusable SHA",
+    (f) => {
+      f.referencedWorkflows[0].sha = "d".repeat(40);
+    },
+  ],
+  [
+    "missing reusable definition",
+    (f) => {
+      f.referencedWorkflows = [];
+    },
+  ],
+  [
+    "ambiguous reusable definition",
+    (f) => {
+      f.referencedWorkflows.push({ ...f.referencedWorkflows[0] });
+    },
+  ],
+  [
+    "different run",
+    (f) => {
+      f.runOverride = { id: 99 };
+    },
+  ],
+  [
+    "different event",
+    (f) => {
+      f.runOverride = { event: "push" };
+    },
+  ],
+])
+  test(`reusable source metadata rejects ${name}`, async () => {
+    const f = reusablePRFixture();
+    mutate(f);
+    await assert.rejects(runTartSourceGate(f));
+  });
+
+// Exercise the actual admission code for the existing manual fallback path.
+test("manual AWS fallback admits the exact trusted Linux candidate with unchanged holds", async () => {
+  const f = tartSourceFixture();
+  f.env.SOURCE_CHECK = "server-tests-ubuntu";
+  f.env.REQUESTED_BACKEND = "aws";
+  f.pull.labels = [{ name: "hold" }];
+  await runTartSourceGate(f);
+  assert.deepEqual(f.pull.labels, [{ name: "hold" }]);
+});
+for (const check of ["file-observation", "nix-macos"]) {
+  test(`AWS fallback refuses native ${check} instead of claiming Linux coverage`, async () => {
+    const f = tartSourceFixture();
+    f.env.REQUESTED_BACKEND = "aws";
+    f.env.SOURCE_CHECK = check;
+    await assert.rejects(runTartSourceGate(f), /native coverage/);
+  });
+}
+test("PR reusable callers cannot request AWS provisioning through manual fallback", async () => {
+  const f = reusablePRFixture();
+  f.env.REQUESTED_BACKEND = "aws";
+  await assert.rejects(runTartSourceGate(f), /trusted manual Linux/);
+});
+test("unknown compute backends fail closed", async () => {
+  const f = tartSourceFixture();
+  f.env.REQUESTED_BACKEND = "local";
+  await assert.rejects(runTartSourceGate(f), /trusted manual Linux/);
+});
+
+test("reusable compatibility does not require permissions absent from retained PR18 callers", () => {
+  const s = readFileSync(tartWorkflowPath, "utf8");
+  assert.doesNotMatch(s, /actions: read|id-token: write|statuses: write/);
 });

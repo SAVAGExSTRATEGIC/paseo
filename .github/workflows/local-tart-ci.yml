@@ -1,7 +1,7 @@
-# Commission only after host, network, credentials and runner identity are verified.
-# Public source executes only in disposable network-isolated guests with read-only tokens.
-name: Local Tart CI
-run-name: Tart ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_request.number || inputs.pull_request || 'main' }} @ ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
+# Historical reusable path retained for existing callers, including PR18.
+# Local CI is retired: execute unchanged checks on standard disposable cloud runners.
+name: Cloud compatibility CI
+run-name: Cloud ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_request.number || inputs.pull_request || 'main' }} @ ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
 "on":
   workflow_call:
     inputs:
@@ -17,6 +17,11 @@ run-name: Tart ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_r
         type: string
   workflow_dispatch:
     inputs:
+      backend:
+        description: Standard GitHub cloud or existing AWS fallback for Linux checks
+        type: choice
+        default: github
+        options: [github, aws]
       check:
         description: Fixed check name; file-observation and nix-macos use macOS
         required: false
@@ -40,15 +45,8 @@ env:
   ONNXRUNTIME_NODE_INSTALL: skip
 jobs:
   server-tests-macos:
-    name: Tart ${{ inputs.check || 'file-observation' }}
-    if: ${{ vars.PASEO_PUBLIC_CI_COMMISSIONED == 'true' }}
-    runs-on:
-      group: Paseo Isolated CI
-      labels:
-        - self-hosted
-        - ARM64
-        - ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'nix-macos' && 'Linux' || 'macOS' }}
-        - ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'nix-macos' && 'paseo-isolated-linux' || 'paseo-isolated-macos' }}
+    name: Cloud ${{ inputs.check || 'file-observation' }}
+    runs-on: ${{ (!inputs.check || inputs.check == 'file-observation' || inputs.check == 'nix-macos') && 'macos-26' || (github.event_name == 'workflow_dispatch' && inputs.backend == 'aws') && format('runs-on={0}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id) || 'ubuntu-24.04' }}
     outputs:
       tested-head: ${{ steps.source.outputs.head }}
     steps:
@@ -59,38 +57,56 @@ jobs:
           EXPECTED_PR: ${{ github.event.pull_request.number || inputs.pull_request }}
           EXPECTED_HEAD: ${{ inputs.expected_head || github.event.pull_request.head.sha || github.sha }}
           GH_TOKEN: ${{ github.token }}
-          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
-          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
           SOURCE_CHECK: ${{ inputs.check || 'file-observation' }}
+          REQUESTED_BACKEND: ${{ inputs.backend }}
           EVENT_PR_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_MERGE_HEAD: ${{ github.event.merge_group.head_sha }}
           EVENT_MERGE_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          node --input-type=module <<'SOURCE_GATE'
+          node --input-type=module >> "$GITHUB_OUTPUT" <<'SOURCE_GATE'
           const repo = 'SAVAGExSTRATEGIC/paseo';
           const repositoryId = 1382441324;
           const workflow = `${repo}/.github/workflows/local-tart-ci.yml@refs/heads/main`;
           const env = process.env;
           const checks = ["file-observation", "format", "lint", "typecheck", "server-tests-ubuntu", "desktop-tests-ubuntu", "app-tests", "sdk-tests", "playwright-1", "playwright-2", "playwright-3", "playwright-4", "relay-tests", "cli-tests-1", "cli-tests-2", "cli-tests-3", "nix-linux", "nix-hash", "nix-macos", "docker-build"];
           if (env.GITHUB_REPOSITORY !== repo || env.GITHUB_REPOSITORY_ID !== String(repositoryId) ||
-              env.JOB_WORKFLOW_REF !== workflow || !/^[0-9a-f]{40}$/.test(env.JOB_WORKFLOW_SHA) ||
               !['workflow_dispatch', 'push', 'pull_request_target', 'pull_request', 'merge_group'].includes(env.GITHUB_EVENT_NAME) ||
               !checks.includes(env.SOURCE_CHECK)) throw new Error('Untrusted workflow origin or check');
           const pr = env.EXPECTED_PR || '';
           const event = env.GITHUB_EVENT_NAME;
+          const backend = env.REQUESTED_BACKEND || 'github';
+          if (!['github', 'aws'].includes(backend) || (backend === 'aws' &&
+              (event !== 'workflow_dispatch' || ['file-observation', 'nix-macos'].includes(env.SOURCE_CHECK)))) {
+            throw new Error('AWS fallback requires trusted manual Linux qualification; native coverage stays on cloud macOS');
+          }
           if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }
-          const read = async path => {
+          const read = async (path, publicRunMetadata = false) => {
             const response = await fetch(`https://api.github.com/repos/${repo}/${path}`, {
-              headers: {Authorization: `Bearer ${env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28'},
+              headers: {...(publicRunMetadata ? {} : {Authorization: `Bearer ${env.GH_TOKEN}`}), 'X-GitHub-Api-Version': '2022-11-28'},
               signal: AbortSignal.timeout(15000)
             });
             if (!response.ok) throw new Error('GitHub source read failed');
             return response.json();
           };
+          let workflowSha;
+          if (env.GITHUB_WORKFLOW_REF === workflow) {
+            workflowSha = env.GITHUB_WORKFLOW_SHA;
+          } else {
+            if (!/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID)) throw new Error('Missing immutable run identity');
+            // Public run metadata needs no token or caller permission escalation.
+            const run = await read(`actions/runs/${env.GITHUB_RUN_ID}`, true);
+            if (String(run.id) !== env.GITHUB_RUN_ID || run.event !== event) throw new Error('Run origin changed');
+            const references = (run.referenced_workflows || []).filter(reference =>
+              reference.path === `${repo}/.github/workflows/local-tart-ci.yml@main` &&
+              reference.ref === 'refs/heads/main');
+            if (references.length !== 1) throw new Error('Trusted reusable definition is missing or ambiguous');
+            workflowSha = references[0].sha;
+          }
+          if (!/^[0-9a-f]{40}$/.test(workflowSha)) throw new Error('Invalid trusted workflow source');
           const main = await read('commits/main');
-          if (main.sha !== env.JOB_WORKFLOW_SHA) throw new Error('Trusted main changed');
+          if (main.sha !== workflowSha) throw new Error('Trusted main changed');
           if (event === 'merge_group') {
             if (pr !== '' || !/^refs\/heads\/gh-readonly-queue\/main\/[A-Za-z0-9._/-]+$/.test(env.GITHUB_REF) ||
                 env.EXPECTED_HEAD !== env.GITHUB_SHA || env.EXPECTED_HEAD !== env.EVENT_MERGE_HEAD ||
@@ -114,6 +130,7 @@ jobs:
               throw new Error('Source changed or is outside admitted repository');
             }
           }
+          console.log(`workflow_sha=${workflowSha}`);
           SOURCE_GATE
           printf 'head=%s\n' "$EXPECTED_HEAD" >> "$GITHUB_OUTPUT"
       - name: Read fixed check commands from the trusted workflow revision
@@ -121,7 +138,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: SAVAGExSTRATEGIC/paseo
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ steps.source.outputs.workflow_sha }}
           path: .ci-control
           sparse-checkout: scripts/local-tart-check.sh
           sparse-checkout-cone-mode: false
@@ -158,7 +175,7 @@ jobs:
             src/server/workspace-git-service.observation.test.ts \
             src/server/workspace-git-service.observation.integration.test.ts \
             --bail=1
-      - name: Install pinned Nix inside disposable Linux guest
+      - name: Install pinned Nix on disposable cloud Linux
         if: ${{ inputs.check == 'nix-linux' || inputs.check == 'nix-hash' }}
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702
         with:
@@ -168,7 +185,7 @@ jobs:
           extra_nix_config: |
             max-jobs = 2
             cores = 2
-      - name: Enable cross-architecture Docker builds inside Linux guest
+      - name: Enable cross-architecture Docker builds on cloud Linux
         if: ${{ inputs.check == 'docker-build' }}
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
         with:
@@ -195,7 +212,7 @@ jobs:
           build-args: PASEO_VERSION=${{ steps.package.outputs.version }}
           push: false
           provenance: false
-      - name: Run selected guest check
+      - name: Run selected cloud check
         if: ${{ inputs.check && inputs.check != 'file-observation' && inputs.check != 'docker-build' }}
         shell: bash
         env:
