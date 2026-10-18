@@ -70,7 +70,8 @@ async function runTartSourceGate(fixture) {
     async (url, options) => {
       fixture.requests.push(url);
       assert.match(url, /^https:\/\/api\.github\.com\/repos\/SAVAGExSTRATEGIC\/paseo\//);
-      assert.equal(options.headers.Authorization, "Bearer public-test-fixture");
+      if (url.includes("/actions/runs/")) assert.equal(options.headers.Authorization, undefined);
+      else assert.equal(options.headers.Authorization, "Bearer public-test-fixture");
       assert.ok(options.signal);
       return {
         ok: fixture.httpOk,
@@ -780,4 +781,9 @@ test("unknown compute backends fail closed", async () => {
   const f = tartSourceFixture();
   f.env.REQUESTED_BACKEND = "local";
   await assert.rejects(runTartSourceGate(f), /trusted manual Linux/);
+});
+
+test("reusable compatibility does not require permissions absent from retained PR18 callers", () => {
+  const s = readFileSync(tartWorkflowPath, "utf8");
+  assert.doesNotMatch(s, /actions: read|id-token: write|statuses: write/);
 });

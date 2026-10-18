@@ -38,7 +38,6 @@ run-name: Cloud ${{ inputs.check || 'file-observation' }} ${{ github.event.pull_
 permissions:
   contents: read
   pull-requests: read
-  actions: read
 concurrency:
   group: paseo-tart-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}-${{ inputs.check || 'file-observation' }}
   cancel-in-progress: false
@@ -83,9 +82,9 @@ jobs:
           if ((pr !== '' && !/^[1-9][0-9]*$/.test(pr)) || !/^[0-9a-f]{40}$/.test(env.EXPECTED_HEAD)) {
             throw new Error('Invalid source input');
           }
-          const read = async path => {
+          const read = async (path, publicRunMetadata = false) => {
             const response = await fetch(`https://api.github.com/repos/${repo}/${path}`, {
-              headers: {Authorization: `Bearer ${env.GH_TOKEN}`, 'X-GitHub-Api-Version': '2022-11-28'},
+              headers: {...(publicRunMetadata ? {} : {Authorization: `Bearer ${env.GH_TOKEN}`}), 'X-GitHub-Api-Version': '2022-11-28'},
               signal: AbortSignal.timeout(15000)
             });
             if (!response.ok) throw new Error('GitHub source read failed');
@@ -96,7 +95,8 @@ jobs:
             workflowSha = env.GITHUB_WORKFLOW_SHA;
           } else {
             if (!/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID)) throw new Error('Missing immutable run identity');
-            const run = await read(`actions/runs/${env.GITHUB_RUN_ID}`);
+            // Public run metadata needs no token or caller permission escalation.
+            const run = await read(`actions/runs/${env.GITHUB_RUN_ID}`, true);
             if (String(run.id) !== env.GITHUB_RUN_ID || run.event !== event) throw new Error('Run origin changed');
             const references = (run.referenced_workflows || []).filter(reference =>
               reference.path === `${repo}/.github/workflows/local-tart-ci.yml@main` &&
