@@ -661,7 +661,11 @@ export interface AgentUsageSession {
   sessionKey: string;
 }
 
+import type { McpToolsRefreshInput, McpToolsRefreshResult } from "./mcp-tool-refresh.js";
+
 export interface AgentSession {
+  /** Tool control only: never close, interrupt, allocate a turn or change accounts. */
+  refreshMcpTools?(input: McpToolsRefreshInput): Promise<McpToolsRefreshResult>;
   usageSession?(): AgentUsageSession | null;
   readonly provider: AgentProvider;
   readonly id: string | null;

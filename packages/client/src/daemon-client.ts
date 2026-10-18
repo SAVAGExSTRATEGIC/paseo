@@ -19,6 +19,7 @@ import {
   AgentCreateFailedStatusPayloadSchema,
   AgentCreatedStatusPayloadSchema,
   AgentRefreshedStatusPayloadSchema,
+  AgentToolsRefreshedStatusPayloadSchema,
   AgentResumedStatusPayloadSchema,
   CheckoutRenameBranchResponseSchema,
   parseServerInfoStatusPayload,
@@ -3249,6 +3250,31 @@ export class DaemonClient {
     }
 
     return status.agent;
+  }
+
+  async refreshAgentTools(
+    agentId: string,
+    serverName: string,
+    serverConfig?: import("@getpaseo/protocol/agent-types").McpServerConfig,
+    requestId?: string,
+  ) {
+    const resolvedRequestId = this.createRequestId(requestId);
+    return this.sendRequest({
+      requestId: resolvedRequestId,
+      message: SessionInboundMessageSchema.parse({
+        type: "refresh_agent_tools_request",
+        agentId,
+        serverName,
+        serverConfig,
+        requestId: resolvedRequestId,
+      }),
+      options: { skipQueue: true },
+      select: (msg) => {
+        if (msg.type !== "status") return null;
+        const parsed = AgentToolsRefreshedStatusPayloadSchema.safeParse(msg.payload);
+        return parsed.success && parsed.data.requestId === resolvedRequestId ? parsed.data : null;
+      },
+    });
   }
 
   async refreshAgent(agentId: string, requestId?: string): Promise<AgentRefreshedStatusPayload> {

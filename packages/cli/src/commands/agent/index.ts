@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { addRefreshToolsOptions, runRefreshToolsCommand } from "./refresh-tools.js";
 import { runModeCommand } from "./mode.js";
 import { addArchiveOptions, runArchiveCommand } from "./archive.js";
 import { addDeleteOptions, runDeleteCommand } from "./delete.js";
@@ -25,6 +26,10 @@ import {
 
 export function createAgentCommand(): Command {
   const agent = new Command("agent").description("Manage agents (advanced operations)");
+
+  addJsonAndDaemonHostOptions(addRefreshToolsOptions(agent.command("refresh-tools"))).action(
+    withOutput(runRefreshToolsCommand),
+  );
 
   // Primary agent commands (same as top-level)
   addJsonAndDaemonHostOptions(addLsOptions(agent.command("ls"))).action(withOutput(runLsCommand));
