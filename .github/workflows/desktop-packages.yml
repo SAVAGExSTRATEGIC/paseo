@@ -3,6 +3,17 @@ name: Desktop Packages
 on:
   push:
     branches: [main]
+    # Keep unknown/build/runtime inputs covered; skip prose and unrelated CI edits.
+    paths:
+      - "**"
+      - "!*.md"
+      - "!docs/**"
+      - "!public-docs/**"
+      - "!.agents/**"
+      - "!.claude/**"
+      - "!.codex/**"
+      - "!.github/**"
+      - ".github/workflows/desktop-packages.yml"
   # Packaging leaves ordinary PR CI, but a PR that changes what gets packaged
   # or how it is smoked still proves the real artifacts before merge.
   pull_request:
@@ -11,6 +22,8 @@ on:
       - "packages/desktop/**"
       - "nix/**"
       - ".github/workflows/desktop-packages.yml"
+
+  workflow_dispatch:
 
 concurrency:
   group: desktop-packages-${{ github.ref }}
@@ -33,6 +46,9 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+
+      - name: Check packaging trigger coverage
+        run: node --test scripts/packaging-workflow.test.mjs
 
       - name: Install dependencies
         run: node scripts/npm-retry.mjs ci

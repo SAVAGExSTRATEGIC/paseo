@@ -13,6 +13,24 @@ on:
       - ".github/workflows/nix*.yml"
   push:
     branches: [main]
+    # Keep unknown/build/runtime inputs covered; skip prose and unrelated CI edits.
+    paths:
+      - "**"
+      - "!*.md"
+      - "!docs/**"
+      - "!public-docs/**"
+      - "!.agents/**"
+      - "!.claude/**"
+      - "!.codex/**"
+      - "!.github/**"
+      - ".github/workflows/nix.yml"
+      - ".github/workflows/nix-update-hash.yml"
+
+  workflow_dispatch:
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -27,6 +45,9 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+
+      - name: Check packaging trigger coverage
+        run: node --test scripts/packaging-workflow.test.mjs
 
       - uses: cachix/install-nix-action@v31
         with:

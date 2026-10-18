@@ -1,5 +1,22 @@
 # Testing
 
+## Packaging checks
+
+Docker, Nix and desktop packages build on main when runtime or build inputs change.
+Prose, agent instructions and unrelated workflow changes skip these packaging runs;
+ordinary CI still follows its own contracts. Unknown paths stay included so new
+build inputs cannot silently lose coverage. Runtime Markdown under `skills/` and
+`plugins/` remains included. Each packaging workflow also supports manual runs.
+Docker release tags retain their existing publishing behavior.
+
+Nix Dependency Hash verifies the committed lockfile and dependency hash. The Nix
+workflow owns the default-package build, daemon smoke and native desktop checks,
+so hash validation does not build the same daemon twice.
+
+Run `node --test scripts/packaging-workflow.test.mjs` after changing packaging
+triggers. Preserve positive coverage for runtime assets, dependencies and build
+tools as well as exclusions for prose and unrelated CI changes.
+
 ## Philosophy
 
 Tests prove behavior, not structure. Every test should answer: "what user-visible or API-visible behavior does this verify?"

@@ -19,14 +19,15 @@ on:
       - "flake.lock"
       - "package.json"
       - "package-lock.json"
-      - "packages/highlight/**"
-      - "packages/plugin/**"
-      - "packages/server/**"
-      - "packages/relay/**"
-      - "packages/cli/**"
       - "scripts/update-nix.sh"
       - "scripts/fix-lockfile.mjs"
       - ".github/workflows/nix-update-hash.yml"
+
+  workflow_dispatch:
+
+concurrency:
+  group: nix-hash-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -44,6 +45,9 @@ jobs:
           node-version: "22"
           cache: "npm"
 
+      - name: Check packaging trigger coverage
+        run: node --test scripts/packaging-workflow.test.mjs
+
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
@@ -53,5 +57,4 @@ jobs:
           ./scripts/update-nix.sh --check
           git diff --exit-code -- package-lock.json nix/npm-deps.hash
 
-      - name: Build Nix package
-        run: nix build .#default -o result
+      # nix.yml owns the default package build and daemon smoke for these inputs.
