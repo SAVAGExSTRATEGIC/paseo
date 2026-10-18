@@ -14,6 +14,7 @@ export function addRefreshToolsOptions(cmd: Command): Command {
 export async function runRefreshToolsCommand(
   id: string,
   options: CommandOptions & { server?: string; serverConfig?: string },
+  _command: Command,
 ) {
   const client = await connectToDaemon({ target: options.daemonTarget });
   try {
