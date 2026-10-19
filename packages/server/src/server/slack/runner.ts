@@ -13,11 +13,7 @@ import {
 } from "./conversations.js";
 import { SlackDaemon, stableOperationId } from "./daemon.js";
 import { chunkOutput, redactSlackText } from "./output.js";
-import {
-  questionContinuation,
-  questionResponse,
-  renderQuestion,
-} from "./questions.js";
+import { questionContinuation, questionResponse, renderQuestion } from "./questions.js";
 
 import type { SlackDecisionComposition } from "./decision-composition.js";
 
@@ -34,9 +30,7 @@ function consumeContinuation(text: string, hashes: string[]): void {
   const hash = createHash("sha256").update(text).digest("hex");
   const index = hashes.indexOf(hash);
   if (index < 0)
-    throw new SlackStateError(
-      "Another input changed the session; inspect it in Paseo",
-    );
+    throw new SlackStateError("Another input changed the session; inspect it in Paseo");
   hashes.splice(index, 1);
 }
 
@@ -54,11 +48,7 @@ export class ConversationRunner {
     return `https://app.paseo.sh/h/${encodeURIComponent(binding.target.serverId)}/agent/${encodeURIComponent(binding.agentId)}`;
   }
 
-  private async notice(
-    event: SlackIntake,
-    suffix: string,
-    text: string,
-  ): Promise<void> {
+  private async notice(event: SlackIntake, suffix: string, text: string): Promise<void> {
     await this.input.store.enqueue(event.conversationKey, {
       id: stableOperationId(suffix, event.id),
       text: redactSlackText(text),
@@ -67,10 +57,7 @@ export class ConversationRunner {
 
   async tick(): Promise<void> {
     for (const event of this.input.store.pending()) {
-      if (
-        event.phase === "needs_attention" &&
-        this.input.decisionQueue?.owns(event)
-      ) {
+      if (event.phase === "needs_attention" && this.input.decisionQueue?.owns(event)) {
         try {
           const recovered = await this.input.decisionQueue.recover(event);
           if (recovered) await this.decisionRecorded(event);
@@ -95,11 +82,7 @@ export class ConversationRunner {
           "code" in error &&
           error.code === "canonical_slack_outcome_unknown"
         ) {
-          await this.input.store.transition(
-            event.id,
-            "accepted",
-            "needs_attention",
-          );
+          await this.input.store.transition(event.id, "accepted", "needs_attention");
           await this.notice(
             event,
             "canonical-uncertain",
@@ -112,9 +95,7 @@ export class ConversationRunner {
         } else await this.refuse(event, error);
       }
     }
-    const keys = new Set(
-      this.input.store.pending().map((event) => event.conversationKey),
-    );
+    const keys = new Set(this.input.store.pending().map((event) => event.conversationKey));
     for (const key of keys) {
       if (this.jobs.has(key)) continue;
       const job = this.conversation(key)
@@ -138,16 +119,10 @@ export class ConversationRunner {
 
   private async workerFailed(key: string, error: unknown): Promise<void> {
     if (this.input.signal.aborted) return;
-    const event = this.input.store
-      .pending()
-      .find((entry) => entry.conversationKey === key);
+    const event = this.input.store.pending().find((entry) => entry.conversationKey === key);
     if (!event) return;
     if (error instanceof SlackPolicyError || error instanceof SlackStateError) {
-      await this.input.store.transition(
-        event.id,
-        event.phase,
-        "needs_attention",
-      );
+      await this.input.store.transition(event.id, event.phase, "needs_attention");
       await this.notice(
         event,
         "worker-attention",
@@ -161,10 +136,7 @@ export class ConversationRunner {
       );
       await delay(5000, undefined, { signal: this.input.signal });
     }
-    this.input.failure(
-      "conversation_worker_failed",
-      stableOperationId("conversation", key),
-    );
+    this.input.failure("conversation_worker_failed", stableOperationId("conversation", key));
   }
 
   private target(event: SlackIntake): SlackTarget | null {
@@ -172,17 +144,10 @@ export class ConversationRunner {
     const binding = this.input.store.binding(event.conversationKey);
     const selected = this.input.store.selectedTarget(event.conversationKey);
     const selection =
-      command.kind === "prompt" || command.kind === "select"
-        ? command.selection
-        : {};
-    const hasSelection =
-      selection.host !== undefined || selection.project !== undefined;
+      command.kind === "prompt" || command.kind === "select" ? command.selection : {};
+    const hasSelection = selection.host !== undefined || selection.project !== undefined;
     if (!hasSelection)
-      return (
-        binding?.target ??
-        selected ??
-        selectSlackTarget(this.input.config.policy.targets, {})
-      );
+      return binding?.target ?? selected ?? selectSlackTarget(this.input.config.policy.targets, {});
     return selectSlackTarget(this.input.config.policy.targets, selection);
   }
 
@@ -200,11 +165,7 @@ export class ConversationRunner {
       return null;
     }
     await this.host(target).verifyTarget(target);
-    await this.input.store.selectTarget(
-      event.conversationKey,
-      event.userId,
-      target,
-    );
+    await this.input.store.selectTarget(event.conversationKey, event.userId, target);
     return target;
   }
 
@@ -245,15 +206,9 @@ export class ConversationRunner {
     } else if (command.kind === "answer") {
       if (!binding) throw new SlackStateError("No session is bound to answer");
       const agent = await this.host(binding.target).inspect(binding);
-      const requestId = this.input.store.controlRequestId(
-        command.token,
-        binding.key,
-      );
-      const request = agent.pendingPermissions?.find(
-        (entry) => entry.id === requestId,
-      );
-      if (!request)
-        throw new SlackStateError("That question is no longer pending");
+      const requestId = this.input.store.controlRequestId(command.token, binding.key);
+      const request = agent.pendingPermissions?.find((entry) => entry.id === requestId);
+      if (!request) throw new SlackStateError("That question is no longer pending");
       const response = questionResponse(request, command.text);
       const decision = await this.input.store.claimQuestion(
         {
@@ -283,16 +238,12 @@ export class ConversationRunner {
         target,
         agentId: command.agentId,
       });
-      if (!agent.workspaceId)
-        throw new SlackStateError("Session has no workspace");
+      if (!agent.workspaceId) throw new SlackStateError("Session has no workspace");
       const tail = await agent.timeline.refetch({
         limit: 1,
         projection: "canonical",
       });
-      if (tail.error)
-        throw new SlackStateError(
-          "Cannot establish attachment history boundary",
-        );
+      if (tail.error) throw new SlackStateError("Cannot establish attachment history boundary");
       await this.input.store.bind({
         key: event.conversationKey,
         ownerId: event.userId,
@@ -324,17 +275,12 @@ export class ConversationRunner {
         text: redactSlackText(text),
       },
     ]);
-    this.input.failure(
-      "slack_operation_refused",
-      stableOperationId("event", event.id),
-    );
+    this.input.failure("slack_operation_refused", stableOperationId("event", event.id));
   }
 
   private async conversation(key: string): Promise<void> {
     while (!this.input.signal.aborted) {
-      const event = this.input.store
-        .pending()
-        .find((entry) => entry.conversationKey === key);
+      const event = this.input.store.pending().find((entry) => entry.conversationKey === key);
       if (!event || event.phase === "needs_attention") return;
       const command = parseSlackCommand(event.text);
       if (command.kind !== "prompt") return;
@@ -343,8 +289,7 @@ export class ConversationRunner {
         const target = await this.choose(event);
         if (!target) return;
         const agent = await this.host(target).create(event, target);
-        if (!agent.workspaceId)
-          throw new SlackStateError("Created session has no workspace");
+        if (!agent.workspaceId) throw new SlackStateError("Created session has no workspace");
         await this.input.store.bind({
           key,
           ownerId: event.userId,
@@ -377,9 +322,7 @@ export class ConversationRunner {
       const terminal = terminals[update.event.type];
       if (terminal) {
         const result = terminal;
-        journal = journal.then(() =>
-          this.input.store.recordTerminal(binding.key, result),
-        );
+        journal = journal.then(() => this.input.store.recordTerminal(binding.key, result));
       }
     });
     try {
@@ -399,18 +342,13 @@ export class ConversationRunner {
           limit: 1,
           projection: "canonical",
         });
-        if (tail.error)
-          throw new SlackStateError(
-            "Cannot checkpoint timeline before dispatch",
-          );
+        if (tail.error) throw new SlackStateError("Cannot checkpoint timeline before dispatch");
         await this.input.store.prepareDispatch(event.id, {
           epoch: tail.epoch,
           seq: tail.window.maxSeq,
         });
       }
-      const current = this.input.store
-        .pending()
-        .find((entry) => entry.id === event.id);
+      const current = this.input.store.pending().find((entry) => entry.id === event.id);
       if (!current) return;
       if (current.phase === "dispatching") {
         // The same message ID consults the daemon's durable receipt; it never chooses a new operation.
@@ -446,22 +384,14 @@ export class ConversationRunner {
     for (;;) {
       if (this.input.signal.aborted) return;
       await journal();
-      const active = this.input.store
-        .pending()
-        .find((entry) => entry.id === event.id);
+      const active = this.input.store.pending().find((entry) => entry.id === event.id);
       if (!active) return;
       await agent.refresh();
       await this.requests(agent, binding);
-      if (
-        !active.terminal &&
-        (await this.recoverTerminal(agent, active, binding))
-      )
-        continue;
+      if (!active.terminal && (await this.recoverTerminal(agent, active, binding))) continue;
       if (
         active.terminal &&
-        !agent.pendingPermissions?.some(
-          (request) => request.kind === "question",
-        )
+        !agent.pendingPermissions?.some((request) => request.kind === "question")
       ) {
         await this.complete(agent, active);
         return;
@@ -510,10 +440,7 @@ export class ConversationRunner {
     return false;
   }
 
-  private async requests(
-    agent: PaseoAgentHandle,
-    binding: SlackBinding,
-  ): Promise<void> {
+  private async requests(agent: PaseoAgentHandle, binding: SlackBinding): Promise<void> {
     for (const request of agent.pendingPermissions ?? []) {
       if (request.kind === "question") {
         await this.question(request, binding);
@@ -524,14 +451,9 @@ export class ConversationRunner {
         request,
         now: Date.now(),
       });
-      const label = redactSlackText(request.title ?? request.name).slice(
-        0,
-        2000,
-      );
+      const label = redactSlackText(request.title ?? request.name).slice(0, 2000);
       const detail = redactSlackText(JSON.stringify(request.input ?? {}));
-      const sections = chunkOutput(
-        `Permission required: ${label}\nRequested input:\n${detail}`,
-      );
+      const sections = chunkOutput(`Permission required: ${label}\nRequested input:\n${detail}`);
       if (sections.length > 12) {
         await this.input.store.enqueue(binding.key, {
           id: stableOperationId("permission-large", token),
@@ -595,10 +517,7 @@ export class ConversationRunner {
     }
   }
 
-  private async complete(
-    agent: PaseoAgentHandle,
-    active: SlackIntake,
-  ): Promise<void> {
+  private async complete(agent: PaseoAgentHandle, active: SlackIntake): Promise<void> {
     const output = await this.finalText(agent, active);
     if (!output.found || !output.continuationsComplete)
       throw new SlackStateError("Cannot prove this task's timeline identity");
@@ -624,23 +543,13 @@ export class ConversationRunner {
     event: SlackIntake,
     agent: PaseoAgentHandle,
   ): Promise<void> {
-    const current = this.input.store
-      .pending()
-      .find((entry) => entry.id === event.id);
+    const current = this.input.store.pending().find((entry) => entry.id === event.id);
     const unknown =
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "agent_request_outcome_unknown";
+      error instanceof Error && "code" in error && error.code === "agent_request_outcome_unknown";
     const requiresInspection =
-      unknown ||
-      error instanceof SlackStateError ||
-      error instanceof SlackPolicyError;
+      unknown || error instanceof SlackStateError || error instanceof SlackPolicyError;
     if (requiresInspection && current) {
-      await this.input.store.transition(
-        current.id,
-        current.phase,
-        "needs_attention",
-      );
+      await this.input.store.transition(current.id, current.phase, "needs_attention");
       await this.notice(
         event,
         "uncertain",
@@ -654,10 +563,7 @@ export class ConversationRunner {
       );
       await delay(5000, undefined, { signal: this.input.signal });
     }
-    this.input.failure(
-      "paseo_follow_failed",
-      stableOperationId("event", event.id),
-    );
+    this.input.failure("paseo_follow_failed", stableOperationId("event", event.id));
   }
 
   private async finalText(
@@ -669,8 +575,7 @@ export class ConversationRunner {
     hasAssistant: boolean;
     continuationsComplete: boolean;
   }> {
-    if (!event.startCursor)
-      throw new SlackStateError("Missing dispatch timeline checkpoint");
+    if (!event.startCursor) throw new SlackStateError("Missing dispatch timeline checkpoint");
     let cursor = event.startCursor;
     let found = false;
     const texts: string[] = [];
@@ -688,15 +593,13 @@ export class ConversationRunner {
       for (const entry of page.entries) {
         if (entry.item.type === "user_message") {
           const matches =
-            entry.item.clientMessageId === expected ||
-            entry.item.messageId === expected;
+            entry.item.clientMessageId === expected || entry.item.messageId === expected;
           if (found && !matches) {
             consumeContinuation(entry.item.text, continuations);
             texts.length = 0;
           }
           if (matches) found = true;
-        } else if (found && entry.item.type === "assistant_message")
-          texts.push(entry.item.text);
+        } else if (found && entry.item.type === "assistant_message") texts.push(entry.item.text);
       }
       if (!page.hasNewer) {
         return {
@@ -708,8 +611,7 @@ export class ConversationRunner {
             "The turn ended without an assistant message. Open the session for details.",
         };
       }
-      if (!page.endCursor)
-        throw new SlackStateError("Missing timeline pagination cursor");
+      if (!page.endCursor) throw new SlackStateError("Missing timeline pagination cursor");
       cursor = page.endCursor;
     }
     throw new SlackStateError(
@@ -723,13 +625,8 @@ export class ConversationRunner {
         const binding = this.input.store.binding(receipt.key);
         if (!binding) throw new SlackPolicyError("interaction_binding");
         const agent = await this.host(binding.target).inspect(binding);
-        const requestId = this.input.store.controlRequestId(
-          receipt.token,
-          receipt.key,
-        );
-        const request = agent.pendingPermissions?.find(
-          (entry) => entry.id === requestId,
-        );
+        const requestId = this.input.store.controlRequestId(receipt.token, receipt.key);
+        const request = agent.pendingPermissions?.find((entry) => entry.id === requestId);
         if (!request) {
           await this.input.store.resolveControl(receipt.token);
           await this.input.store.interactionState(receipt.id, "resolved");
@@ -749,10 +646,7 @@ export class ConversationRunner {
         await this.input.store.resolveControl(receipt.token);
         await this.input.store.interactionState(receipt.id, "resolved");
       } catch (error) {
-        if (
-          error instanceof SlackPolicyError ||
-          error instanceof SlackStateError
-        ) {
+        if (error instanceof SlackPolicyError || error instanceof SlackStateError) {
           await this.input.store.interactionState(receipt.id, "resolved");
           await this.input.store.enqueue(receipt.key, {
             id: stableOperationId("control-rejected", receipt.id),

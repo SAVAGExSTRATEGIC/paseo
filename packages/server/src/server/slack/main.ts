@@ -1,16 +1,8 @@
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  acquirePidLock,
-  releasePidLock,
-  startPidLockHeartbeat,
-} from "../pid-lock.js";
-import {
-  readBridgeConfig,
-  requireSecret,
-  type BridgeConfig,
-} from "./config.js";
+import { acquirePidLock, releasePidLock, startPidLockHeartbeat } from "../pid-lock.js";
+import { readBridgeConfig, requireSecret, type BridgeConfig } from "./config.js";
 import { ConversationStore, SlackPolicyError } from "./conversations.js";
 import { createSocketConsumer } from "./consumer.js";
 import { SlackDaemon, stableOperationId } from "./daemon.js";
@@ -50,14 +42,10 @@ async function checkHosts(
   return results.every((result) => result.status === "fulfilled");
 }
 
-export async function runBridge(
-  file: string,
-  signal: AbortSignal,
-): Promise<void> {
+export async function runBridge(file: string, signal: AbortSignal): Promise<void> {
   const config = await readBridgeConfig(file);
   const release = requireSecret(process.env, "PASEO_SLACK_RELEASE");
-  if (!/^[0-9a-f]{40}$/u.test(release))
-    throw new SlackPolicyError("release_commit_required");
+  if (!/^[0-9a-f]{40}$/u.test(release)) throw new SlackPolicyError("release_commit_required");
   const decisionQueue = await loadDecisionBootstrap({
     configFile: file,
     config,
@@ -94,10 +82,7 @@ export async function runBridge(
   let socket: Promise<void> | undefined;
   try {
     logger = await createBridgeLog(join(config.dataDirectory, "logs"), stop);
-    const store = await ConversationStore.open(
-      config.dataDirectory,
-      config.policy,
-    );
+    const store = await ConversationStore.open(config.dataDirectory, config.policy);
     await store.prune(Date.now());
     await backupJournal(store, join(config.dataDirectory, "backups"), release);
     for (const entry of config.hosts)
@@ -120,8 +105,7 @@ export async function runBridge(
     closeHealth = (
       await serveHealth(config.healthPort, () => ({
         ...health,
-        hostsReady:
-          health.hostsReady && [...hosts.values()].every((host) => host.ready),
+        hostsReady: health.hostsReady && [...hosts.values()].every((host) => host.ready),
       }))
     ).close;
     const failures = new Map<string, number>();
@@ -149,9 +133,7 @@ export async function runBridge(
       failure,
       state: (connected) => {
         if (health.socketConnected !== connected)
-          log(
-            connected ? "slack_socket_connected" : "slack_socket_disconnected",
-          );
+          log(connected ? "slack_socket_connected" : "slack_socket_disconnected");
         health.socketConnected = connected;
       },
     });
@@ -164,18 +146,14 @@ export async function runBridge(
     let nextMaintenance = Date.now() + 60 * 60_000;
     log("bridge_started", release);
     while (!controller.signal.aborted) {
-      if (
-        health.hostsReady &&
-        [...hosts.values()].some((host) => !host.ready)
-      ) {
+      if (health.hostsReady && [...hosts.values()].some((host) => !host.ready)) {
         health.hostsReady = false;
         log("paseo_unavailable");
       }
       if (!hostsCheck && Date.now() >= nextCheck) {
         hostsCheck = checkHosts(config, hosts)
           .then((ready) => {
-            if (health.hostsReady !== ready)
-              log(ready ? "paseo_ready" : "paseo_unavailable");
+            if (health.hostsReady !== ready) log(ready ? "paseo_ready" : "paseo_unavailable");
             health.hostsReady = ready;
             return undefined;
           })
@@ -186,11 +164,7 @@ export async function runBridge(
       }
       if (Date.now() >= nextMaintenance) {
         await store.prune(Date.now());
-        await backupJournal(
-          store,
-          join(config.dataDirectory, "backups"),
-          release,
-        );
+        await backupJournal(store, join(config.dataDirectory, "backups"), release);
         nextMaintenance = Date.now() + 60 * 60_000;
         log("journal_maintenance_complete");
       }
@@ -202,13 +176,9 @@ export async function runBridge(
       health.pendingDeliveries = store.deliveries().length;
       health.needsAttention =
         pending.filter((entry) => entry.phase === "needs_attention").length +
-        store.deliveries().filter((entry) => entry.phase === "uncertain")
-          .length +
-        store.pendingInteractions().filter((entry) => entry.phase === "claimed")
-          .length;
-      await delay(500, undefined, { signal: controller.signal }).catch(
-        () => undefined,
-      );
+        store.deliveries().filter((entry) => entry.phase === "uncertain").length +
+        store.pendingInteractions().filter((entry) => entry.phase === "claimed").length;
+      await delay(500, undefined, { signal: controller.signal }).catch(() => undefined);
     }
     await hostsCheck;
   } catch (error) {
@@ -233,10 +203,7 @@ export async function runBridge(
   }
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
   process.once("SIGTERM", () => controller.abort());

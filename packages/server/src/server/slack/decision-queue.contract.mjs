@@ -5,21 +5,19 @@ import { stripTypeScriptTypes, createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 const uri = (s) =>
     "data:text/javascript;base64," +
-    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString(
-      "base64",
-    ),
-  require = createRequire(
-    (process.env.DQ_TEST_PACKAGE_ROOT || process.cwd()) + "/package.json",
-  ),
+    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString("base64"),
+  require = createRequire((process.env.DQ_TEST_PACKAGE_ROOT || process.cwd()) + "/package.json"),
   zod = JSON.stringify(pathToFileURL(require.resolve("zod")).href),
   storeURL = uri(
-    (
-      await readFile(new URL("./conversations.ts", import.meta.url), "utf8")
-    ).replace('from "zod"', `from ${zod}`),
+    (await readFile(new URL("./conversations.ts", import.meta.url), "utf8")).replace(
+      'from "zod"',
+      `from ${zod}`,
+    ),
   ),
-  code = (
-    await readFile(new URL("./decision-queue.ts", import.meta.url), "utf8")
-  ).replace('from "./conversations.js"', `from ${JSON.stringify(storeURL)}`),
+  code = (await readFile(new URL("./decision-queue.ts", import.meta.url), "utf8")).replace(
+    'from "./conversations.js"',
+    `from ${JSON.stringify(storeURL)}`,
+  ),
   { createSlackDecisionQueue, parseDecisionCommand } = await import(uri(code));
 const policy = {
     teamId: "T1",
@@ -135,10 +133,7 @@ test("canonical card keeps source identity, escapes mentions and never sends or 
   assert.equal(f.writes(), 0);
 });
 test("chosen and custom exact answers use the same canonical conditional commit", async () => {
-  for (const text of [
-    "First",
-    "Keep scope narrow.\nCustom answer with spaces  ",
-  ]) {
+  for (const text of ["First", "Keep scope narrow.\nCustom answer with spaces  "]) {
     const f = fixture(),
       c = await f.adapter.card(binding);
     const r = await f.adapter.handle(f.event(c.token, "answer", text));
@@ -152,9 +147,7 @@ test("chosen and custom exact answers use the same canonical conditional commit"
 test("discussion never becomes approval; later answer uses fresh canonical version", async () => {
   const f = fixture(),
     c = await f.adapter.card(binding);
-  await f.adapter.handle(
-    f.event(c.token, "discuss", "Explain the alternatives"),
-  );
+  await f.adapter.handle(f.event(c.token, "discuss", "Explain the alternatives"));
   assert.equal(f.q.answer, undefined);
   assert.equal(f.q.state, "open");
   const fresh = await f.adapter.card(binding);
@@ -172,9 +165,7 @@ test("wrong workspace/user/channel/thread/private scope rejects before reading q
   ]) {
     const f = fixture();
     await assert.rejects(f.adapter.card({ ...binding, ...patch }));
-    await assert.rejects(
-      f.adapter.handle({ ...f.event("a".repeat(64)), ...patch }),
-    );
+    await assert.rejects(f.adapter.handle({ ...f.event("a".repeat(64)), ...patch }));
     assert.equal(f.reads(), 0);
     assert.equal(f.writes(), 0);
   }
@@ -209,9 +200,7 @@ test("conflicting repeated body and stale card cannot change a decision", async 
     e = f.event(c.token);
   await f.adapter.handle(e);
   await assert.rejects(f.adapter.handle({ ...e, text: e.text + "changed" }));
-  await assert.rejects(
-    f.adapter.handle(f.event(c.token, "answer", "Different", "Ev2")),
-  );
+  await assert.rejects(f.adapter.handle(f.event(c.token, "answer", "Different", "Ev2")));
   assert.equal(f.writes(), 1);
 });
 test("lost canonical acknowledgment recovers original receipt through a fresh adapter", async () => {
@@ -232,12 +221,8 @@ test("defer and skip suppress reminders until explicit human resume", async () =
     await f.adapter.handle(f.event(c.token, action, "Later"));
     const next = await f.adapter.card(binding);
     assert.equal(next.reminderEligible, false);
-    await assert.rejects(
-      f.adapter.handle(f.event(next.token, "answer", "First", "Ev2")),
-    );
-    await f.adapter.handle(
-      f.event(next.token, "resume", "Resume bounded question", "Ev3"),
-    );
+    await assert.rejects(f.adapter.handle(f.event(next.token, "answer", "First", "Ev2")));
+    await f.adapter.handle(f.event(next.token, "resume", "Resume bounded question", "Ev3"));
     assert.equal(f.q.state, "open");
     assert.equal(f.q.answer, undefined);
   }
@@ -256,14 +241,8 @@ test("settled answers are preserved; only discussion remains available", async (
 test("unaccepted input, malformed command and unqualified receipt never dispatch", async () => {
   const f = fixture(),
     c = await f.adapter.card(binding);
-  await assert.rejects(
-    f.adapter.handle({ ...f.event(c.token), phase: "dispatching" }),
-  );
-  for (const s of [
-    "answer x yes",
-    "decision answer bad yes",
-    `decision answer ${c.token} `,
-  ])
+  await assert.rejects(f.adapter.handle({ ...f.event(c.token), phase: "dispatching" }));
+  for (const s of ["answer x yes", "decision answer bad yes", `decision answer ${c.token} `])
     assert.throws(() => parseDecisionCommand(s));
   const unsafe = createSlackDecisionQueue(policy, binding, {
     ...f.port,
@@ -273,29 +252,19 @@ test("unaccepted input, malformed command and unqualified receipt never dispatch
   assert.equal(f.writes(), 0);
 });
 test("existing router reserves decisions so uncommissioned input cannot fall through to agent prompt", async () => {
-  const commandCode = (
-    await readFile(new URL("./commands.ts", import.meta.url), "utf8")
-  ).replace('from "./conversations.js"', `from ${JSON.stringify(storeURL)}`);
+  const commandCode = (await readFile(new URL("./commands.ts", import.meta.url), "utf8")).replace(
+    'from "./conversations.js"',
+    `from ${JSON.stringify(storeURL)}`,
+  );
   const { parseSlackCommand } = await import(uri(commandCode));
-  assert.equal(
-    parseSlackCommand("decision answer something").kind,
-    "decision-unconfigured",
-  );
-  const runner = await readFile(
-    new URL("./runner.ts", import.meta.url),
-    "utf8",
-  );
+  assert.equal(parseSlackCommand("decision answer something").kind, "decision-unconfigured");
+  const runner = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
   const commandURL = uri(commandCode),
-    outputURL = uri(
-      await readFile(new URL("./output.ts", import.meta.url), "utf8"),
-    ),
+    outputURL = uri(await readFile(new URL("./output.ts", import.meta.url), "utf8")),
     questionURL = uri(
       (await readFile(new URL("./questions.ts", import.meta.url), "utf8"))
         .replace('from "zod"', `from ${zod}`)
-        .replace(
-          'from "./conversations.js"',
-          `from ${JSON.stringify(storeURL)}`,
-        ),
+        .replace('from "./conversations.js"', `from ${JSON.stringify(storeURL)}`),
     ),
     daemonURL = uri(
       'export class SlackDaemon {} export function stableOperationId(){throw Error("Unexpected daemon access")}',
@@ -343,29 +312,20 @@ async function actualRouterFixture() {
       `from ${JSON.stringify(storeURL)}`,
     ),
     commandURL = uri(commandCode);
-  const daemon = await readFile(
-      new URL("./daemon.ts", import.meta.url),
-      "utf8",
-    ),
+  const daemon = await readFile(new URL("./daemon.ts", import.meta.url), "utf8"),
     stable = daemon.match(/export function stableOperationId[\s\S]*?\n}/)?.[0];
   assert.ok(stable);
   const modules = {
     "./commands.js": commandURL,
     "./conversations.js": storeURL,
     "./daemon.js": uri(
-      'import { createHash } from "node:crypto"; export class SlackDaemon {}\n' +
-        stable,
+      'import { createHash } from "node:crypto"; export class SlackDaemon {}\n' + stable,
     ),
-    "./output.js": uri(
-      await readFile(new URL("./output.ts", import.meta.url), "utf8"),
-    ),
+    "./output.js": uri(await readFile(new URL("./output.ts", import.meta.url), "utf8")),
     "./questions.js": uri(
       (await readFile(new URL("./questions.ts", import.meta.url), "utf8"))
         .replace('from "zod"', `from ${zod}`)
-        .replace(
-          'from "./conversations.js"',
-          `from ${JSON.stringify(storeURL)}`,
-        ),
+        .replace('from "./conversations.js"', `from ${JSON.stringify(storeURL)}`),
     ),
   };
   let runner = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
@@ -381,11 +341,7 @@ test("decision reservation survives selectors, whitespace and malformed decision
   const { parseSlackCommand } = await actualRouterFixture();
   for (const text of reservedVariants) {
     const original = text;
-    assert.equal(
-      parseSlackCommand(text).kind,
-      "decision-unconfigured",
-      JSON.stringify(text),
-    );
+    assert.equal(parseSlackCommand(text).kind, "decision-unconfigured", JSON.stringify(text));
     assert.equal(text, original);
   }
   for (const text of [
@@ -396,10 +352,7 @@ test("decision reservation survives selectors, whitespace and malformed decision
   ]) {
     const parsed = parseSlackCommand(text);
     assert.equal(parsed.kind, "prompt");
-    assert.equal(
-      parsed.text,
-      text.startsWith("host=") ? "build a decision report" : text,
-    );
+    assert.equal(parsed.text, text.startsWith("host=") ? "build a decision report" : text);
   }
 });
 test("actual runner tick and real persisted journal refuse every reserved variant with zero daemon/create/prompt/send calls", async () => {
@@ -448,7 +401,7 @@ test("actual runner tick and real persisted journal refuse every reserved varian
         store,
         hosts: new Map([["primary", daemon]]),
         signal: controller.signal,
-        failure: (code) => failures.push(code),
+        failure: (failureCode) => failures.push(failureCode),
       });
       await instance.tick();
       assert.deepEqual(calls, [], JSON.stringify(text));
@@ -459,9 +412,7 @@ test("actual runner tick and real persisted journal refuse every reserved varian
       assert.equal(outputs.length, 1);
       assert.match(outputs[0].text, /not commissioned/);
       assert.equal(outputs[0].phase, "pending");
-      const journal = JSON.parse(
-        await readFile(join(directory, "conversations.json"), "utf8"),
-      );
+      const journal = JSON.parse(await readFile(join(directory, "conversations.json"), "utf8"));
       assert.equal(journal.intake[0].text, text);
       assert.equal(journal.intake[0].messageTs, "1.2");
       assert.equal(journal.intake[0].phase, "completed");

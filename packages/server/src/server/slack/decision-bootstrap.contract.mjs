@@ -6,15 +6,10 @@ import { stripTypeScriptTypes } from "node:module";
 import { createHash } from "node:crypto";
 const uri = (s) =>
     "data:text/javascript;base64," +
-    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString(
-      "base64",
-    ),
+    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString("base64"),
   read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
   sha = (b) => createHash("sha256").update(b).digest("hex");
-const helperURL = new URL(
-  "./decision-composition.contract.mjs",
-  import.meta.url,
-).href;
+const helperURL = new URL("./decision-composition.contract.mjs", import.meta.url).href;
 let helpers = await fs.readFile(new URL(helperURL), "utf8");
 helpers = helpers
   .slice(0, helpers.search(/const use\s*=/))
@@ -35,10 +30,7 @@ let bootstrap = await read("./decision-bootstrap.ts");
 bootstrap = bootstrap
   .replace('from "zod"', `from ${base.zod}`)
   .replace('from "./conversations.js"', `from ${JSON.stringify(base.storeURL)}`)
-  .replace(
-    'from "./decision-composition.js"',
-    `from ${JSON.stringify(base.compositionURL)}`,
-  );
+  .replace('from "./decision-composition.js"', `from ${JSON.stringify(base.compositionURL)}`);
 const bootURL = uri(bootstrap),
   { loadDecisionBootstrap } = await import(bootURL);
 export async function bootFixture(bundleCode) {
@@ -58,11 +50,7 @@ export async function bootFixture(bundleCode) {
   const qpath = join(canonicalHome, "savage-bots/questions.json");
   await fs.writeFile(qpath, JSON.stringify([f.q]), { mode: 0o600 });
   const sources = {};
-  for (const n of [
-    "server/store.ts",
-    "server/decision-loop.ts",
-    "shared/bots.ts",
-  ]) {
+  for (const n of ["server/store.ts", "server/decision-loop.ts", "shared/bots.ts"]) {
     const b = Buffer.from("approved source fixture " + n);
     await fs.writeFile(join(sourceRoot, n), b, { mode: 0o600 });
     sources[n] = sha(b);
@@ -131,7 +119,7 @@ export async function bootFixture(bundleCode) {
     },
   });
 }
-const use = (fn) => async () => {
+const withBootstrapFixture = (fn) => async () => {
   const f = await bootFixture();
   try {
     await fn(f);
@@ -152,7 +140,7 @@ test("default disabled performs no canonical root or module access", async () =>
 });
 test(
   "pinned disabled marker ignores unavailable canonical paths",
-  use(async (f) => {
+  withBootstrapFixture(async (f) => {
     f.manifest.enabled = false;
     f.manifest.canonicalHome = "/missing";
     await f.save();
@@ -178,22 +166,19 @@ for (const name of [
 ])
   test(
     "startup refuses " + name,
-    use(async (f) => {
+    withBootstrapFixture(async (f) => {
       let input = f.input();
-      if (name === "missing-pin")
-        delete input.environment.PASEO_SLACK_DECISION_MANIFEST_SHA256;
+      if (name === "missing-pin") delete input.environment.PASEO_SLACK_DECISION_MANIFEST_SHA256;
       else if (name === "manifest-drift") await fs.appendFile(f.file, " ");
       else if (name === "wrong-release") input.release = "c".repeat(40);
       else if (name === "wrong-owner") f.manifest.ownerUid++;
       else if (name === "wrong-app") f.manifest.scope.appId = "A2";
-      else if (name === "wrong-config")
-        await fs.appendFile(f.policy.configPath, " ");
+      else if (name === "wrong-config") await fs.appendFile(f.policy.configPath, " ");
       else if (name === "wrong-home") input.environment.PASEO_HOME = "/missing";
       else if (name === "missing-store") await fs.unlink(f.qpath);
       else if (name === "wrong-source")
         await fs.appendFile(join(f.sourceRoot, "server/store.ts"), "drift");
-      else if (name === "bundle-drift")
-        await fs.appendFile(f.bundle, "\n//drift");
+      else if (name === "bundle-drift") await fs.appendFile(f.bundle, "\n//drift");
       else if (name === "symlink-bundle") {
         await fs.rename(f.bundle, f.bundle + ".saved");
         await fs.symlink(f.bundle + ".saved", f.bundle);
@@ -223,7 +208,7 @@ for (const name of [
   );
 test(
   "actual bootstrap commits once and restarted capability recovers receipt",
-  use(async (f) => {
+  withBootstrapFixture(async (f) => {
     const p = await f.emit(),
       queue = await f.load();
     await f.newRunner(queue).tick();
@@ -238,7 +223,7 @@ test(
 );
 test(
   "root drift after startup refuses before canonical write",
-  use(async (f) => {
+  withBootstrapFixture(async (f) => {
     const queue = await f.load();
     await f.emit();
     await fs.appendFile(join(f.sourceRoot, "server/store.ts"), "changed");
@@ -265,13 +250,11 @@ export async function mainHarness(f) {
       ";",
   );
   let main = await read("./main.ts");
-  main = main.replace(/from "\.\.?\/[^"\n]+"/g, (m) =>
-    m.includes("runner.js")
-      ? `from ${JSON.stringify(base.runnerURL)}`
-      : m.includes("decision-bootstrap.js")
-        ? `from ${JSON.stringify(bootURL)}`
-        : `from ${JSON.stringify(u)}`,
-  );
+  main = main.replace(/from "\.\.?\/[^"\n]+"/g, (match) => {
+    if (match.includes("runner.js")) return `from ${JSON.stringify(base.runnerURL)}`;
+    if (match.includes("decision-bootstrap.js")) return `from ${JSON.stringify(bootURL)}`;
+    return `from ${JSON.stringify(u)}`;
+  });
   const module = await import(uri(main + "\n//" + f.root));
   return {
     calls,
@@ -289,8 +272,7 @@ export async function mainHarness(f) {
       }, 3000);
       try {
         await module.runBridge(f.policy.configPath, controller.signal);
-        if (calls.includes("test-timeout"))
-          throw Error("Main harness timed out");
+        if (calls.includes("test-timeout")) throw Error("Main harness timed out");
       } finally {
         clearTimeout(timeout);
         for (const [k, v] of Object.entries(old))
@@ -303,27 +285,18 @@ export async function mainHarness(f) {
 }
 test(
   "real main startup wires same runner and root-bound capability",
-  use(async (f) => {
+  withBootstrapFixture(async (f) => {
     await f.emit();
     const m = await mainHarness(f);
     await m.run();
-    assert.deepEqual(m.calls, [
-      "identity",
-      "lock",
-      "socket-boundary",
-      "outbox-boundary",
-      "unlock",
-    ]);
-    assert.equal(
-      JSON.parse(await fs.readFile(f.qpath))[0].decisionSlackReceipts.length,
-      1,
-    );
+    assert.deepEqual(m.calls, ["identity", "lock", "socket-boundary", "outbox-boundary", "unlock"]);
+    assert.equal(JSON.parse(await fs.readFile(f.qpath))[0].decisionSlackReceipts.length, 1);
     assert.deepEqual(f.calls, []);
   }),
 );
 test(
   "real main bad bootstrap refuses before auth/lock/socket boundary",
-  use(async (f) => {
+  withBootstrapFixture(async (f) => {
     await fs.appendFile(f.bundle, "changed");
     const m = await mainHarness(f);
     await assert.rejects(m.run());

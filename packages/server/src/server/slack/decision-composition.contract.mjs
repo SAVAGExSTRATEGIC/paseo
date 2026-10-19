@@ -1,13 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 const uri = (s) =>
     "data:text/javascript;base64," +
-    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString(
-      "base64",
-    ),
+    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString("base64"),
   url = new URL("./canonical-slack-port.contract.mjs", import.meta.url).href;
 let helpers = await fs.readFile(new URL(url), "utf8");
 helpers = helpers
@@ -15,9 +12,7 @@ helpers = helpers
   .replaceAll("import.meta.url", JSON.stringify(url));
 const base = await import(
   "data:text/javascript;base64," +
-    Buffer.from(
-      helpers + "\nexport{fixture,uri,storeURL,queueURL,portURL,zod};",
-    ).toString("base64")
+    Buffer.from(helpers + "\nexport{fixture,uri,storeURL,queueURL,portURL,zod};").toString("base64")
 );
 const read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
   commandsURL = uri(
@@ -28,14 +23,8 @@ const read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
   ),
   compositionURL = uri(
     (await read("./decision-composition.ts"))
-      .replace(
-        'from "./decision-queue.js"',
-        `from ${JSON.stringify(base.queueURL)}`,
-      )
-      .replace(
-        'from "./canonical-slack-port.js"',
-        `from ${JSON.stringify(base.portURL)}`,
-      ),
+      .replace('from "./decision-queue.js"', `from ${JSON.stringify(base.queueURL)}`)
+      .replace('from "./canonical-slack-port.js"', `from ${JSON.stringify(base.portURL)}`),
   ),
   { createSlackDecisionComposition } = await import(compositionURL),
   { decisionToken } = await import(base.queueURL),
@@ -43,17 +32,11 @@ const read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
 const ingressURL = uri(
     (await read("./ingress.ts"))
       .replace('from "zod"', `from ${base.zod}`)
-      .replace(
-        'from "./conversations.js"',
-        `from ${JSON.stringify(base.storeURL)}`,
-      ),
+      .replace('from "./conversations.js"', `from ${JSON.stringify(base.storeURL)}`),
   ),
   consumerURL = uri(
     (await read("./consumer.ts"))
-      .replace(
-        'from "./conversations.js"',
-        `from ${JSON.stringify(base.storeURL)}`,
-      )
+      .replace('from "./conversations.js"', `from ${JSON.stringify(base.storeURL)}`)
       .replace('from "./ingress.js"', `from ${JSON.stringify(ingressURL)}`),
   ),
   { createSocketConsumer } = await import(consumerURL);
@@ -63,17 +46,12 @@ assert.ok(stable);
 const replacements = {
   "./commands.js": commandsURL,
   "./conversations.js": base.storeURL,
-  "./daemon.js": uri(
-    'import{createHash}from"node:crypto";export class SlackDaemon{};' + stable,
-  ),
+  "./daemon.js": uri('import{createHash}from"node:crypto";export class SlackDaemon{};' + stable),
   "./output.js": uri(await read("./output.ts")),
   "./questions.js": uri(
     (await read("./questions.ts"))
       .replace('from "zod"', `from ${base.zod}`)
-      .replace(
-        'from "./conversations.js"',
-        `from ${JSON.stringify(base.storeURL)}`,
-      ),
+      .replace('from "./conversations.js"', `from ${JSON.stringify(base.storeURL)}`),
   ),
 };
 let runner = await read("./runner.ts");
@@ -90,7 +68,7 @@ async function composed() {
     failures = [];
   f.canonical.transition = (rows, e) => {
     const next = structuredClone(rows),
-      q = next.find((q) => q.id === e.questionId),
+      q = next.find((candidate) => candidate.id === e.questionId),
       loop = q.decisionLoop;
     assert.equal(loop.version, e.expectedVersion);
     if (e.type === "answer") {
@@ -167,13 +145,9 @@ async function composed() {
         ...patch,
       },
     }),
-    emit = async (
-      action = "answer",
-      text = "Exact normalized answer",
-      patch = {},
-    ) => {
+    emit = async (action = "answer", text = "Exact normalized answer", patch = {}) => {
       seq++;
-      const q = (await f.canonical.read()).find((q) => q.id === "original-q"),
+      const q = (await f.canonical.read()).find((candidate) => candidate.id === "original-q"),
         token = decisionToken(scope.binding, {
           id: q.id,
           taskId: q.decisionLoop.taskId,
@@ -227,10 +201,7 @@ test("actual receiver→persisted journal→runner→derived admission→canonic
     assert.equal(q.answer, "Exact normalized answer");
     assert.equal(q.decisionSlackReceipts.length, 1);
     assert.equal(q.decisionLoop.events[1].actor.source.platform, "slack");
-    assert.equal(
-      q.decisionLoop.events[1].actor.source.item,
-      p.payload.event_id,
-    );
+    assert.equal(q.decisionLoop.events[1].actor.source.item, p.payload.event_id);
     assert.equal(JSON.stringify(p.payload), raw);
     assert.deepEqual(f.calls, []);
     assert.match(f.bridge.deliveries()[0].text, /No session was resumed/);
@@ -253,17 +224,13 @@ for (const [name, patch] of Object.entries({
   bot: { user: "B1" },
   edited: { subtype: "message_changed" },
 }))
-  test(
-    "actual receiver/composition rejects " +
-      name +
-      " with zero canonical/daemon effects",
-    () =>
-      use(async (f) => {
-        await f.emit("answer", "Denied", patch);
-        await f.worker.tick();
-        assert.equal(f.writes(), 0);
-        assert.deepEqual(f.calls, []);
-      }),
+  test("actual receiver/composition rejects " + name + " with zero canonical/daemon effects", () =>
+    use(async (f) => {
+      await f.emit("answer", "Denied", patch);
+      await f.worker.tick();
+      assert.equal(f.writes(), 0);
+      assert.deepEqual(f.calls, []);
+    }),
   );
 test("wrong app and workspace payloads never reach a canonical transition", () =>
   use(async (f) => {
@@ -283,26 +250,22 @@ for (const text of [
   "decision answer bad yes",
   "host=primary decision answer bad yes",
 ])
-  test(
-    "scoped runner does not turn " + JSON.stringify(text) + " into agent work",
-    () =>
-      use(async (f) => {
-        const p = await f.emit();
-        await f.bridge.finish(p.event.id, []);
-        p.payload.event_id += "-input";
-        p.payload.event.text = text;
-        await f.consumer.accept("events_api", p.payload, "malformed");
-        await f.worker.tick();
-        assert.equal(f.writes(), 0);
-        assert.deepEqual(f.calls, []);
-      }),
+  test("scoped runner does not turn " + JSON.stringify(text) + " into agent work", () =>
+    use(async (f) => {
+      const p = await f.emit();
+      await f.bridge.finish(p.event.id, []);
+      p.payload.event_id += "-input";
+      p.payload.event.text = text;
+      await f.consumer.accept("events_api", p.payload, "malformed");
+      await f.worker.tick();
+      assert.equal(f.writes(), 0);
+      assert.deepEqual(f.calls, []);
+    }),
   );
 test("caller edits and cross-question tokens cannot manufacture admission", () =>
   use(async (f) => {
     const p = await f.emit();
-    await assert.rejects(
-      f.composition.handle({ ...p.event, text: p.event.text + "changed" }),
-    );
+    await assert.rejects(f.composition.handle({ ...p.event, text: p.event.text + "changed" }));
     await f.bridge.finish(p.event.id, []);
     for (const token of [
       "a".repeat(64),
@@ -356,35 +319,17 @@ test("uncertain precommit without a receipt stays retained after restart and is 
   }));
 test("derived admissions keep discussion/defer/skip/resume/answer semantics across actual entrypoints", () =>
   use(async (f) => {
-    for (const action of [
-      "discuss",
-      "defer",
-      "resume",
-      "skip",
-      "resume",
-      "answer",
-    ]) {
+    for (const action of ["discuss", "defer", "resume", "skip", "resume", "answer"]) {
       await f.emit(action, action + " original human text");
       await f.worker.tick();
       const q = f.rows()[0];
-      assert.equal(
-        q.decisionLoop.state,
-        action === "defer"
-          ? "deferred"
-          : action === "skip"
-            ? "skipped"
-            : action === "answer"
-              ? "answered"
-              : "open",
-      );
+      const expectedStates = { defer: "deferred", skip: "skipped", answer: "answered" };
+      assert.equal(q.decisionLoop.state, expectedStates[action] ?? "open");
       if (action !== "answer") assert.equal(q.answer, null);
     }
     assert.equal(f.writes(), 6);
     assert.equal(f.rows()[0].decisionSlackReceipts.length, 6);
-    assert.equal(
-      f.rows()[0].decisionLoop.events.filter((e) => e.type === "answer").length,
-      1,
-    );
+    assert.equal(f.rows()[0].decisionLoop.events.filter((e) => e.type === "answer").length, 1);
     assert.deepEqual(f.calls, []);
   }));
 

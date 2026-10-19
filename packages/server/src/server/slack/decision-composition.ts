@@ -14,20 +14,13 @@ import {
   type SlackJournalPolicy,
 } from "./canonical-slack-port.js";
 
-export interface ApprovedSlackDecisionScope extends Omit<
-  SlackJournalPolicy,
-  "admissions"
-> {
+export interface ApprovedSlackDecisionScope extends Omit<SlackJournalPolicy, "admissions"> {
   allowedActions: DecisionAction[];
 }
 export interface SlackDecisionComposition {
   owns(event: SlackIntake): boolean;
-  handle(
-    event: SlackIntake,
-  ): Promise<{ receipt: DecisionReceipt; dispatchAllowed: false }>;
-  recover(
-    event: SlackIntake,
-  ): Promise<{ receipt: DecisionReceipt; dispatchAllowed: false } | null>;
+  handle(event: SlackIntake): Promise<{ receipt: DecisionReceipt; dispatchAllowed: false }>;
+  recover(event: SlackIntake): Promise<{ receipt: DecisionReceipt; dispatchAllowed: false } | null>;
 }
 const identity = (e: SlackIntake) => [
   e.id,
@@ -41,8 +34,7 @@ const identity = (e: SlackIntake) => [
   e.receivedAt,
   e.conversationKey,
 ];
-const digest = (v: unknown) =>
-  createHash("sha256").update(JSON.stringify(v)).digest("hex");
+const digest = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 export function createSlackDecisionComposition(
   input: ApprovedSlackDecisionScope,
   canonical: ExistingCanonicalTransactions,
@@ -65,9 +57,7 @@ export function createSlackDecisionComposition(
       !scope.allowedActions.includes(original.command.action)
     )
       throw Error("Caller differs from scoped accepted Slack event");
-    const matches = (await canonical.read()).filter(
-        (q) => q.id === b.questionId,
-      ),
+    const matches = (await canonical.read()).filter((q) => q.id === b.questionId),
       q = matches[0];
     if (
       matches.length !== 1 ||
@@ -78,13 +68,9 @@ export function createSlackDecisionComposition(
       q.isSecret === true
     )
       throw Error("Approved canonical composition binding mismatch");
-    const receipts = (q.decisionSlackReceipts ?? []).filter(
-      (r) => r.eventId === original.eventId,
-    );
+    const receipts = (q.decisionSlackReceipts ?? []).filter((r) => r.eventId === original.eventId);
     if (receipts.length > 1) throw Error("Ambiguous canonical event receipt");
-    const version = receipts[0]
-      ? receipts[0].version - 1
-      : q.decisionLoop.version;
+    const version = receipts[0] ? receipts[0].version - 1 : q.decisionLoop.version;
     if (
       !Number.isSafeInteger(version) ||
       version < 1 ||
@@ -131,24 +117,18 @@ export function createSlackDecisionComposition(
   }
   return {
     // A commissioned decision thread never treats ordinary text as agent work.
-    owns: (event) =>
-      event.channelId === b.channelId && event.rootTs === b.rootTs,
+    owns: (event) => event.channelId === b.channelId && event.rootTs === b.rootTs,
     async handle(event) {
       const { port, request, original } = await admitted(event),
         known = await port.receipt(request.eventId);
       if (known) return { receipt: known, dispatchAllowed: false };
       if (event.phase !== "accepted" || original.event.phase !== "accepted")
-        throw Error(
-          "Original event requires read-only reconciliation, not another commit",
-        );
+        throw Error("Original event requires read-only reconciliation, not another commit");
       try {
         return { receipt: await port.commit(request), dispatchAllowed: false };
       } catch (cause) {
         throw Object.assign(
-          new Error(
-            "Canonical decision outcome requires receipt reconciliation",
-            { cause },
-          ),
+          new Error("Canonical decision outcome requires receipt reconciliation", { cause }),
           { code: "canonical_slack_outcome_unknown" },
         );
       }

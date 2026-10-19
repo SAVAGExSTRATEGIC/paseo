@@ -63,9 +63,7 @@ const manifestSchema = z
             disclosureApproved: z.literal(true),
           })
           .strict(),
-        allowedActions: z
-          .array(z.enum(["answer", "discuss", "defer", "skip", "resume"]))
-          .min(1),
+        allowedActions: z.array(z.enum(["answer", "discuss", "defer", "skip", "resume"])).min(1),
       })
       .strict(),
   })
@@ -83,12 +81,7 @@ function directory(root: string, uid: number, privateRoot = false): string {
     throw Error("Unsafe canonical bootstrap root");
   return resolved;
 }
-function bytes(
-  file: string,
-  root: string,
-  uid: number,
-  privateFile = false,
-): Buffer {
+function bytes(file: string, root: string, uid: number, privateFile = false): Buffer {
   const actual = path.resolve(file);
   if (realpathSync(actual) !== actual || !actual.startsWith(root + path.sep))
     throw Error("Unbound canonical bootstrap file");
@@ -118,6 +111,26 @@ function bytes(
   }
 }
 
+function assertReceiverBinding(
+  m: z.infer<typeof manifestSchema>,
+  input: { configFile: string; config: BridgeConfig; release: string },
+  uid: number,
+) {
+  const scope = m.scope;
+  if (
+    m.ownerUid !== uid ||
+    scope.ownerUid !== uid ||
+    m.release !== input.release ||
+    m.configPath !== path.resolve(input.configFile) ||
+    scope.configPath !== m.configPath ||
+    scope.configSha256 !== m.configSha256 ||
+    scope.appId !== input.config.appId ||
+    scope.journalRoot !== input.config.dataDirectory ||
+    scope.journalPath !== path.join(scope.journalRoot, "conversations.json")
+  )
+    throw Error("Receiver bootstrap identity mismatch");
+}
+
 /** Operator-pinned, local same-service capability. No manifest means zero canonical IO/imports.
  * A manifest/hash is source admission, never proof of a human disclosure/install grant.
  * Owner-private roots are the trust boundary, not a malicious same-UID sandbox.
@@ -135,8 +148,7 @@ export async function loadDecisionBootstrap(input: {
   if (!file || !pin || !/^[a-f0-9]{64}$/u.test(pin))
     throw Error("Incomplete pinned decision bootstrap");
   const uid = process.getuid ? process.getuid() : -1;
-  if (uid < 0)
-    throw Error("Canonical bootstrap requires owner identity");
+  if (uid < 0) throw Error("Canonical bootstrap requires owner identity");
   const manifestRoot = directory(path.dirname(file), uid, true),
     raw = bytes(file, manifestRoot, uid, true);
   if (sha(raw) !== pin) throw Error("Decision manifest changed");
@@ -146,18 +158,7 @@ export async function loadDecisionBootstrap(input: {
   const m = manifestSchema.parse(decoded),
     scope = m.scope,
     b = scope.binding;
-  if (
-    m.ownerUid !== uid ||
-    scope.ownerUid !== uid ||
-    m.release !== input.release ||
-    m.configPath !== path.resolve(input.configFile) ||
-    scope.configPath !== m.configPath ||
-    scope.configSha256 !== m.configSha256 ||
-    scope.appId !== input.config.appId ||
-    scope.journalRoot !== input.config.dataDirectory ||
-    scope.journalPath !== path.join(scope.journalRoot, "conversations.json")
-  )
-    throw Error("Receiver bootstrap identity mismatch");
+  assertReceiverBinding(m, input, uid);
   const configRoot = directory(scope.configRoot, uid, true);
   if (sha(bytes(m.configPath, configRoot, uid, true)) !== m.configSha256)
     throw Error("Receiver config changed before bootstrap");
@@ -200,17 +201,13 @@ export async function loadDecisionBootstrap(input: {
       throw Error("Canonical staged module drift");
   }
   verify();
-  const canonical = await import(
-    pathToFileURL(bundle).href + "?sha256=" + m.bundleSha256
-  );
+  const canonical = await import(pathToFileURL(bundle).href + "?sha256=" + m.bundleSha256);
   verify();
   if (
     canonical.botsRootDir !== questionRoot ||
-    ![
-      canonical.readQuestions,
-      canonical.mutateQuestions,
-      canonical.transitionQuestions,
-    ].every((v) => typeof v === "function")
+    ![canonical.readQuestions, canonical.mutateQuestions, canonical.transitionQuestions].every(
+      (v) => typeof v === "function",
+    )
   )
     throw Error("Canonical exports/root mismatch");
   const port: ExistingCanonicalTransactions = {

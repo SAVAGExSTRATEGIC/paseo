@@ -16,13 +16,7 @@ export interface DecisionView {
   context: string | null;
   options: string[];
   recommended: number | null;
-  state:
-    | "open"
-    | "answered"
-    | "legacy-answered"
-    | "deferred"
-    | "skipped"
-    | "settled";
+  state: "open" | "answered" | "legacy-answered" | "deferred" | "skipped" | "settled";
   secret: boolean;
 }
 export interface DecisionReceipt {
@@ -73,22 +67,11 @@ export interface DecisionBinding extends DecisionAudience {
   originRevision: string;
   disclosureApproved: true;
 }
-const hash = (value: unknown) =>
-  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const escape = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-const identity = (a: DecisionAudience) => [
-  a.teamId,
-  a.channelId,
-  a.rootTs,
-  a.userId,
-  a.isDM,
-];
-function authorize(
-  policy: SlackPolicy,
-  binding: DecisionBinding,
-  actor: DecisionAudience,
-) {
+const identity = (a: DecisionAudience) => [a.teamId, a.channelId, a.rootTs, a.userId, a.isDM];
+function authorize(policy: SlackPolicy, binding: DecisionBinding, actor: DecisionAudience) {
   if (
     !binding.disclosureApproved ||
     actor.teamId !== policy.teamId ||
@@ -108,24 +91,14 @@ function view(binding: DecisionBinding, q: DecisionView) {
     !Number.isInteger(q.version) ||
     q.version < 1 ||
     q.secret !== false ||
-    ![
-      "open",
-      "answered",
-      "legacy-answered",
-      "deferred",
-      "skipped",
-      "settled",
-    ].includes(q.state) ||
+    !["open", "answered", "legacy-answered", "deferred", "skipped", "settled"].includes(q.state) ||
     typeof q.question !== "string" ||
     !Array.isArray(q.options) ||
     q.options.some((x) => typeof x !== "string") ||
     !q.question.trim() ||
-    q.question.length + (q.context?.length ?? 0) + q.options.join("").length >
-      25000
+    q.question.length + (q.context?.length ?? 0) + q.options.join("").length > 25000
   )
-    throw new SlackStateError(
-      "Canonical decision binding is unavailable; inspect in Paseo",
-    );
+    throw new SlackStateError("Canonical decision binding is unavailable; inspect in Paseo");
 }
 export function decisionToken(binding: DecisionBinding, q: DecisionView) {
   return hash([identity(binding), q.id, q.taskId, q.originRevision, q.version]);
@@ -135,10 +108,9 @@ export function parseDecisionCommand(text: string): {
   token: string;
   text: string;
 } {
-  const match =
-    /^decision (answer|discuss|defer|skip|resume) ([a-f0-9]{64}) ([\s\S]+)$/u.exec(
-      text,
-    );
+  const match = /^decision (answer|discuss|defer|skip|resume) ([a-f0-9]{64}) ([\s\S]+)$/u.exec(
+    text,
+  );
   if (!match || !match[3].trim() || match[3].length > 20000)
     throw new SlackStateError(
       "Use decision <answer|discuss|defer|skip|resume> <card-token> <text>",
@@ -148,6 +120,23 @@ export function parseDecisionCommand(text: string): {
     token: match[2],
     text: match[3],
   };
+}
+function assertReplayReceipt(
+  known: DecisionReceipt,
+  binding: DecisionBinding,
+  eventId: string,
+  eventDigest: string,
+) {
+  if (
+    known.eventId !== eventId ||
+    known.eventDigest !== eventDigest ||
+    known.questionId !== binding.questionId ||
+    known.taskId !== binding.taskId ||
+    known.originRevision !== binding.originRevision ||
+    !Number.isInteger(known.version) ||
+    known.version < 1
+  )
+    throw new SlackStateError("Conflicting decision replay; preserve original receipt");
 }
 export function createSlackDecisionQueue(
   policyInput: SlackPolicy,
@@ -166,12 +155,9 @@ export function createSlackDecisionQueue(
         (option, index) =>
           `${index + 1}. ${escape(option)}${q.recommended === index ? " (recommended)" : ""}`,
       );
-      const actions =
-        q.state === "open"
-          ? ["answer", "discuss", "defer", "skip"]
-          : ["deferred", "skipped"].includes(q.state)
-            ? ["resume", "discuss"]
-            : ["discuss"];
+      let actions = ["discuss"];
+      if (q.state === "open") actions = ["answer", "discuss", "defer", "skip"];
+      else if (["deferred", "skipped"].includes(q.state)) actions = ["resume", "discuss"];
       return {
         questionId: q.id,
         taskId: q.taskId,
@@ -191,42 +177,20 @@ export function createSlackDecisionQueue(
     },
     async handle(event: SlackIntake) {
       authorize(policy, binding, event);
-      if (
-        event.phase !== "accepted" ||
-        !event.id ||
-        !/^\d+\.\d+$/u.test(event.messageTs)
-      )
+      if (event.phase !== "accepted" || !event.id || !/^\d+\.\d+$/u.test(event.messageTs))
         throw new SlackPolicyError("decision_source");
       const command = parseDecisionCommand(event.text),
         eventId = "slack-decision:" + hash([event.teamId, event.id]);
-      const eventDigest = hash([
-        identity(event),
-        event.id,
-        event.messageTs,
-        event.text,
-      ]);
+      const eventDigest = hash([identity(event), event.id, event.messageTs, event.text]);
       const known = await port.receipt(eventId);
       if (known) {
-        if (
-          known.eventId !== eventId ||
-          known.eventDigest !== eventDigest ||
-          known.questionId !== binding.questionId ||
-          known.taskId !== binding.taskId ||
-          known.originRevision !== binding.originRevision ||
-          !Number.isInteger(known.version) ||
-          known.version < 1
-        )
-          throw new SlackStateError(
-            "Conflicting decision replay; preserve original receipt",
-          );
+        assertReplayReceipt(known, binding, eventId, eventDigest);
         return { receipt: known, dispatchAllowed: false as const };
       }
       const q = await port.read(binding.questionId);
       view(binding, q);
       if (command.token !== decisionToken(binding, q))
-        throw new SlackStateError(
-          "Stale decision card; inspect the current canonical question",
-        );
+        throw new SlackStateError("Stale decision card; inspect the current canonical question");
       if (
         command.action === "resume"
           ? !["deferred", "skipped"].includes(q.state)

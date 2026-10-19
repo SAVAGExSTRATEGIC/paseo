@@ -1,11 +1,4 @@
-import {
-  constants,
-  openSync,
-  closeSync,
-  fstatSync,
-  readFileSync,
-  realpathSync,
-} from "node:fs";
+import { constants, openSync, closeSync, fstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -17,10 +10,9 @@ import {
   type DecisionReceipt,
   type DecisionView,
 } from "./decision-queue.js";
-import { authorizeMessage, SlackPolicySchema } from "./conversations.js";
+import { authorizeMessage, SlackPolicySchema, type SlackIntake } from "./conversations.js";
 
-const hash = (v: unknown) =>
-  createHash("sha256").update(JSON.stringify(v)).digest("hex");
+const hash = (v: unknown) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 export interface SlackJournalPolicy {
   ownerUid: number;
   journalRoot: string;
@@ -83,18 +75,12 @@ export interface ExistingCanonicalTransactions {
       result: T;
     },
   ): Promise<T>;
-  transition(
-    rows: CanonicalQuestion[],
-    event: CanonicalSlackTransition,
-  ): CanonicalQuestion[];
+  transition(rows: CanonicalQuestion[], event: CanonicalSlackTransition): CanonicalQuestion[];
 }
 function boundBytes(file: string, root: string, uid: number) {
   const actualRoot = realpathSync(root),
     actual = path.resolve(file);
-  if (
-    realpathSync(actual) !== actual ||
-    !actual.startsWith(actualRoot + path.sep)
-  )
+  if (realpathSync(actual) !== actual || !actual.startsWith(actualRoot + path.sep))
     throw Error("Unbound/symlink Slack evidence");
   const fd = openSync(actual, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -139,15 +125,8 @@ export function readScopedSlackJournalEvent(
   policy: Omit<SlackJournalPolicy, "admissions">,
   originalEventId: string,
 ) {
-  const configBytes = boundBytes(
-    policy.configPath,
-    policy.configRoot,
-    policy.ownerUid,
-  );
-  if (
-    createHash("sha256").update(configBytes).digest("hex") !==
-    policy.configSha256
-  )
+  const configBytes = boundBytes(policy.configPath, policy.configRoot, policy.ownerUid);
+  if (createHash("sha256").update(configBytes).digest("hex") !== policy.configSha256)
     throw Error("Slack receiver configuration changed");
   const config = JSON.parse(configBytes.toString("utf8")),
     receiver = SlackPolicySchema.parse(config.policy),
@@ -160,17 +139,17 @@ export function readScopedSlackJournalEvent(
   )
     throw Error("Uncommissioned Slack account/disclosure");
   const journal = JSON.parse(
-    boundBytes(
-      policy.journalPath,
-      policy.journalRoot,
-      policy.ownerUid,
-    ).toString("utf8"),
+    boundBytes(policy.journalPath, policy.journalRoot, policy.ownerUid).toString("utf8"),
   );
-  if (!Array.isArray(journal.intake))
-    throw Error("Missing original Slack intake");
-  const matches = journal.intake.filter((e: any) => e.id === originalEventId);
-  if (matches.length !== 1)
-    throw Error("Missing/ambiguous original Slack event");
+  if (!Array.isArray(journal.intake)) throw Error("Missing original Slack intake");
+  const matches = journal.intake.filter(
+    (candidate: unknown): candidate is SlackIntake =>
+      typeof candidate === "object" &&
+      candidate !== null &&
+      "id" in candidate &&
+      candidate.id === originalEventId,
+  );
+  if (matches.length !== 1) throw Error("Missing/ambiguous original Slack event");
   const e = matches[0];
   authorizeMessage(receiver, e);
   if (
@@ -208,17 +187,12 @@ export function readScopedSlackJournalEvent(
     ]);
   return { event: e, revision, command, eventId, eventDigest };
 }
-export function readAcceptedSlackSource(
-  policy: SlackJournalPolicy,
-  originalEventId: string,
-) {
+export function readAcceptedSlackSource(policy: SlackJournalPolicy, originalEventId: string) {
   const source = readScopedSlackJournalEvent(policy, originalEventId),
     admissions = policy.admissions.filter(
-      (a) =>
-        a.originalEventId === source.event.id && a.revision === source.revision,
+      (a) => a.originalEventId === source.event.id && a.revision === source.revision,
     );
-  if (admissions.length !== 1)
-    throw Error("Unadmitted/edited Slack event revision");
+  if (admissions.length !== 1) throw Error("Unadmitted/edited Slack event revision");
   const admission = admissions[0];
   if (
     source.command.action !== admission.action ||
@@ -250,16 +224,13 @@ export function createCanonicalSlackPort(
   }
   function sourceFor(eventId: string) {
     const matches = policy.admissions.filter(
-      (a) =>
-        "slack-decision:" + hash([b.teamId, a.originalEventId]) === eventId,
+      (a) => "slack-decision:" + hash([b.teamId, a.originalEventId]) === eventId,
     );
     if (matches.length !== 1) throw Error("Unadmitted Slack event identity");
     return readAcceptedSlackSource(policy, matches[0].originalEventId);
   }
   function known(q: CanonicalQuestion, s: ReturnType<typeof sourceFor>) {
-    const rows = (q.decisionSlackReceipts ?? []).filter(
-      (r) => r.eventId === s.eventId,
-    );
+    const rows = (q.decisionSlackReceipts ?? []).filter((r) => r.eventId === s.eventId);
     if (!rows.length) return null;
     const r = rows[0],
       event = q.decisionLoop!.events.filter((e) => e.id === s.eventId);
@@ -291,14 +262,8 @@ export function createCanonicalSlackPort(
   return {
     async read(id) {
       if (id !== b.questionId) throw Error("Unbound canonical question");
-      const bytes = boundBytes(
-        policy.configPath,
-        policy.configRoot,
-        policy.ownerUid,
-      );
-      if (
-        createHash("sha256").update(bytes).digest("hex") !== policy.configSha256
-      )
+      const bytes = boundBytes(policy.configPath, policy.configRoot, policy.ownerUid);
+      if (createHash("sha256").update(bytes).digest("hex") !== policy.configSha256)
         throw Error("Slack receiver configuration changed");
       const config = JSON.parse(bytes.toString("utf8"));
       receiverJournal(config, policy);

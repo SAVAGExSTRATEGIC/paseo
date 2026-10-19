@@ -9,17 +9,11 @@ import { pathToFileURL } from "node:url";
 const read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
   uri = (s) =>
     "data:text/javascript;base64," +
-    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString(
-      "base64",
-    ),
+    Buffer.from(stripTypeScriptTypes(s, { mode: "transform" })).toString("base64"),
   hash = (v) => createHash("sha256").update(JSON.stringify(v)).digest("hex"),
-  require = createRequire(
-    (process.env.DQ_TEST_PACKAGE_ROOT || process.cwd()) + "/package.json",
-  ),
+  require = createRequire((process.env.DQ_TEST_PACKAGE_ROOT || process.cwd()) + "/package.json"),
   zod = JSON.stringify(pathToFileURL(require.resolve("zod")).href),
-  storeURL = uri(
-    (await read("./conversations.ts")).replace('from "zod"', `from ${zod}`),
-  ),
+  storeURL = uri((await read("./conversations.ts")).replace('from "zod"', `from ${zod}`)),
   queueURL = uri(
     (await read("./decision-queue.ts")).replace(
       'from "./conversations.js"',
@@ -29,18 +23,13 @@ const read = (n) => fs.readFile(new URL(n, import.meta.url), "utf8"),
   portURL = uri(
     (await read("./canonical-slack-port.ts"))
       .replace('from "./conversations.js"', `from ${JSON.stringify(storeURL)}`)
-      .replace(
-        'from "./decision-queue.js"',
-        `from ${JSON.stringify(queueURL)}`,
-      ),
+      .replace('from "./decision-queue.js"', `from ${JSON.stringify(queueURL)}`),
   );
 const { ConversationStore } = await import(storeURL),
   { createSlackDecisionQueue, decisionToken } = await import(queueURL),
   { createCanonicalSlackPort, readAcceptedSlackSource } = await import(portURL);
 async function fixture() {
-  const root = await fs.realpath(
-      await fs.mkdtemp(join(tmpdir(), "canonical-slack-")),
-    ),
+  const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), "canonical-slack-"))),
     journalRoot = join(root, "bridge"),
     configPath = join(root, "receiver.json"),
     journalPath = join(journalRoot, "conversations.json"),
@@ -203,21 +192,21 @@ async function fixture() {
       serial = p.catch(() => {});
       return p;
     },
-    transition(rows, e) {
-      const next = structuredClone(rows),
-        q = next.find((q) => q.id === e.questionId);
-      assert.equal(q.decisionLoop.version, e.expectedVersion);
-      q.decisionLoop.version++;
-      q.decisionLoop.events.push({
+    transition(currentRows, e) {
+      const next = structuredClone(currentRows),
+        currentQuestion = next.find((candidate) => candidate.id === e.questionId);
+      assert.equal(currentQuestion.decisionLoop.version, e.expectedVersion);
+      currentQuestion.decisionLoop.version++;
+      currentQuestion.decisionLoop.events.push({
         id: e.id,
         type: e.type,
         requestDigest: e.requestDigest,
         actor: e.actor,
         text: e.text,
       });
-      q.answer = e.text;
-      q.status = "answered";
-      q.decisionLoop.state = "answered";
+      currentQuestion.answer = e.text;
+      currentQuestion.status = "answered";
+      currentQuestion.decisionLoop.state = "answered";
       return next;
     },
   };
@@ -290,10 +279,7 @@ test("accepted actual Slack journal source commits once through supplied canonic
   }));
 test("known/concurrent replay and restart return one same-store receipt without a no-op write", () =>
   use(async (f) => {
-    const [a, b] = await Promise.all([
-      f.port.commit(f.request),
-      f.port.commit(f.request),
-    ]);
+    const [a, b] = await Promise.all([f.port.commit(f.request), f.port.commit(f.request)]);
     assert.deepEqual(a, b);
     assert.equal(f.writes(), 1);
     await f.make().commit(f.request);
@@ -334,14 +320,10 @@ test("receiver app/config drift, no disclosure admission, symlink and unsafe evi
     assert.throws(() => readAcceptedSlackSource(p, "Ev1"));
     p.appId = "A1";
     p.binding.disclosureApproved = false;
-    await assert.rejects(
-      createCanonicalSlackPort(p, f.canonical).read("original-q"),
-    );
+    await assert.rejects(createCanonicalSlackPort(p, f.canonical).read("original-q"));
     const link = join(f.root, "journal-link");
     await fs.symlink(f.policy.journalPath, link);
-    assert.throws(() =>
-      readAcceptedSlackSource({ ...f.policy, journalPath: link }, "Ev1"),
-    );
+    assert.throws(() => readAcceptedSlackSource({ ...f.policy, journalPath: link }, "Ev1"));
     await fs.chmod(f.policy.journalPath, 0o644);
     assert.throws(() => readAcceptedSlackSource(f.policy, "Ev1"));
     assert.equal(f.writes(), 0);
@@ -370,9 +352,7 @@ test("caller-supplied forged answer or actor cannot override the independently r
     ])
       await assert.rejects(f.port.commit({ ...f.request, ...patch }));
     await f.port.commit(f.request);
-    await assert.rejects(
-      f.port.commit({ ...f.request, text: "Edited replay" }),
-    );
+    await assert.rejects(f.port.commit({ ...f.request, text: "Edited replay" }));
     assert.equal(f.writes(), 1);
   }));
 test("source is checked again under the canonical lock and accepted-to-completed journal phase preserves original revision", () =>
@@ -396,16 +376,10 @@ test("ordinary journal completion does not fabricate a new human answer or break
 test("changed receiver config bytes and a different OS evidence owner are denied before any canonical write", () =>
   use(async (f) => {
     assert.throws(() =>
-      readAcceptedSlackSource(
-        { ...f.policy, ownerUid: f.policy.ownerUid + 1 },
-        "Ev1",
-      ),
+      readAcceptedSlackSource({ ...f.policy, ownerUid: f.policy.ownerUid + 1 }, "Ev1"),
     );
     await fs.appendFile(f.policy.configPath, "\n");
-    assert.throws(
-      () => readAcceptedSlackSource(f.policy, "Ev1"),
-      /configuration changed/,
-    );
+    assert.throws(() => readAcceptedSlackSource(f.policy, "Ev1"), /configuration changed/);
     await assert.rejects(f.port.commit(f.request));
     assert.equal(f.writes(), 0);
   }));
@@ -422,9 +396,6 @@ test("receiver config cannot authenticate a different accepted journal even unde
       ...f.policy,
       configSha256: createHash("sha256").update(bytes).digest("hex"),
     };
-    assert.throws(
-      () => readAcceptedSlackSource(policy, "Ev1"),
-      /receiver\/journal identity/,
-    );
+    assert.throws(() => readAcceptedSlackSource(policy, "Ev1"), /receiver\/journal identity/);
     assert.equal(f.writes(), 0);
   }));

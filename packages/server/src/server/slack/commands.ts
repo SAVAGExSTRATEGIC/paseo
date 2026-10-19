@@ -23,8 +23,7 @@ export function parseSlackCommand(text: string): SlackCommand {
     if (!prefix) break;
     decisionCandidate = decisionCandidate.slice(prefix[0].length).trimStart();
   }
-  if (/^decision(?:\s|$)/u.test(decisionCandidate))
-    return { kind: "decision-unconfigured" };
+  if (/^decision(?:\s|$)/u.test(decisionCandidate)) return { kind: "decision-unconfigured" };
   if (text === "status") return { kind: "status" };
   if (text === "cancel") return { kind: "cancel" };
   if (text.startsWith("answer ")) {
@@ -32,10 +31,7 @@ export function parseSlackCommand(text: string): SlackCommand {
       /^answer ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) ([\s\S]+)$/u.exec(
         text,
       );
-    if (!match)
-      throw new SlackStateError(
-        "Use: answer <question-token> <answer text or JSON>",
-      );
+    if (!match) throw new SlackStateError("Use: answer <question-token> <answer text or JSON>");
     return { kind: "answer", token: match[1], text: match[2] };
   }
   if (text.startsWith("attach ")) {
@@ -58,9 +54,7 @@ export function parseSlackCommand(text: string): SlackCommand {
     prompt = prompt.slice(match[0].length);
   }
   if (/^(host|project)=/u.test(prompt))
-    throw new SlackStateError(
-      "Use the exact host and project aliases listed by status",
-    );
+    throw new SlackStateError("Use the exact host and project aliases listed by status");
   if (prompt.length === 0) return { kind: "select", selection };
   return { kind: "prompt", text: prompt, selection };
 }
@@ -74,7 +68,6 @@ export function selectSlackTarget(
       (selection.host === undefined || target.host === selection.host) &&
       (selection.project === undefined || target.project === selection.project),
   );
-  if (matches.length === 0)
-    throw new SlackStateError("That host/project is not allowed");
+  if (matches.length === 0) throw new SlackStateError("That host/project is not allowed");
   return matches.length === 1 ? matches[0] : null;
 }
