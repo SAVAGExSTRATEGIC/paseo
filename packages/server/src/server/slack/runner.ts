@@ -19,7 +19,10 @@ import {
   renderQuestion,
 } from "./questions.js";
 
+import type { SlackDecisionComposition } from "./decision-composition.js";
+
 interface RunnerInput {
+  decisionQueue?: SlackDecisionComposition;
   config: BridgeConfig;
   store: ConversationStore;
   hosts: ReadonlyMap<string, SlackDaemon>;
@@ -64,12 +67,49 @@ export class ConversationRunner {
 
   async tick(): Promise<void> {
     for (const event of this.input.store.pending()) {
+      if (
+        event.phase === "needs_attention" &&
+        this.input.decisionQueue?.owns(event)
+      ) {
+        try {
+          const recovered = await this.input.decisionQueue.recover(event);
+          if (recovered) await this.decisionRecorded(event);
+        } catch {
+          this.input.failure(
+            "canonical_decision_reconciliation_refused",
+            stableOperationId("event", event.id),
+          );
+        }
+        continue;
+      }
       if (event.phase !== "accepted") continue;
       try {
-        const command = parseSlackCommand(event.text);
+        const command = this.input.decisionQueue?.owns(event)
+          ? { kind: "decision-unconfigured" as const }
+          : parseSlackCommand(event.text);
         if (command.kind !== "prompt") await this.command(event, command);
       } catch (error) {
-        await this.refuse(event, error);
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "canonical_slack_outcome_unknown"
+        ) {
+          await this.input.store.transition(
+            event.id,
+            "accepted",
+            "needs_attention",
+          );
+          await this.notice(
+            event,
+            "canonical-uncertain",
+            "The decision outcome needs receipt reconciliation. Original input is retained; it will not be blindly sent again.",
+          );
+          this.input.failure(
+            "canonical_decision_outcome_unknown",
+            stableOperationId("event", event.id),
+          );
+        } else await this.refuse(event, error);
       }
     }
     const keys = new Set(
@@ -85,6 +125,15 @@ export class ConversationRunner {
       this.jobs.set(key, job);
     }
     await this.interactions();
+  }
+
+  private async decisionRecorded(event: SlackIntake) {
+    await this.input.store.finish(event.id, [
+      {
+        id: stableOperationId("canonical-decision-result", event.id),
+        text: "Recorded in the existing Decision Queue. No session was resumed.",
+      },
+    ]);
   }
 
   private async workerFailed(key: string, error: unknown): Promise<void> {
@@ -163,10 +212,15 @@ export class ConversationRunner {
     event: SlackIntake,
     command: Exclude<ReturnType<typeof parseSlackCommand>, { kind: "prompt" }>,
   ): Promise<void> {
-    if (command.kind === "decision-unconfigured")
-      throw new SlackStateError(
-        "Canonical Decision Queue Slack intake is not commissioned; use Paseo. No answer or discussion was dispatched.",
-      );
+    if (command.kind === "decision-unconfigured") {
+      if (!this.input.decisionQueue)
+        throw new SlackStateError(
+          "Canonical Decision Queue Slack intake is not commissioned; use Paseo. No answer or discussion was dispatched.",
+        );
+      await this.input.decisionQueue.handle(event);
+      await this.decisionRecorded(event);
+      return;
+    }
     const binding = this.input.store.binding(event.conversationKey);
     let text: string;
     if (command.kind === "select") {

@@ -122,7 +122,7 @@ function boundBytes(file: string, root: string, uid: number) {
 }
 function receiverJournal(
   config: { dataDirectory?: unknown },
-  policy: SlackJournalPolicy,
+  policy: Pick<SlackJournalPolicy, "journalRoot" | "journalPath">,
 ) {
   if (
     typeof config.dataDirectory !== "string" ||
@@ -135,8 +135,8 @@ function receiverJournal(
 // Trust boundary: the existing authenticated Socket Mode receiver's private
 // journal plus exact operator-commissioned config/admissions. Not a Slack
 // cryptographic attestation or isolation from a malicious same-UID process.
-export function readAcceptedSlackSource(
-  policy: SlackJournalPolicy,
+export function readScopedSlackJournalEvent(
+  policy: Omit<SlackJournalPolicy, "admissions">,
   originalEventId: string,
 ) {
   const configBytes = boundBytes(
@@ -174,7 +174,7 @@ export function readAcceptedSlackSource(
   const e = matches[0];
   authorizeMessage(receiver, e);
   if (
-    !["accepted", "completed"].includes(e.phase) ||
+    !["accepted", "completed", "needs_attention"].includes(e.phase) ||
     typeof e.text !== "string" ||
     !e.text.trim() ||
     typeof e.id !== "string" ||
@@ -198,19 +198,7 @@ export function readAcceptedSlackSource(
     isDM: e.isDM,
     receivedAt: e.receivedAt,
   });
-  const admission = policy.admissions.filter(
-    (a) => a.originalEventId === e.id && a.revision === revision,
-  );
-  if (admission.length !== 1)
-    throw Error("Unadmitted/edited Slack event revision");
-  const command = parseDecisionCommand(e.text),
-    a = admission[0];
-  if (
-    command.action !== a.action ||
-    !Number.isSafeInteger(a.expectedVersion) ||
-    a.expectedVersion < 1
-  )
-    throw Error("Slack action/version admission mismatch");
+  const command = parseDecisionCommand(e.text);
   const eventId = "slack-decision:" + hash([e.teamId, e.id]),
     eventDigest = hash([
       [e.teamId, e.channelId, e.rootTs, e.userId, e.isDM],
@@ -218,7 +206,27 @@ export function readAcceptedSlackSource(
       e.messageTs,
       e.text,
     ]);
-  return { event: e, revision, command, admission: a, eventId, eventDigest };
+  return { event: e, revision, command, eventId, eventDigest };
+}
+export function readAcceptedSlackSource(
+  policy: SlackJournalPolicy,
+  originalEventId: string,
+) {
+  const source = readScopedSlackJournalEvent(policy, originalEventId),
+    admissions = policy.admissions.filter(
+      (a) =>
+        a.originalEventId === source.event.id && a.revision === source.revision,
+    );
+  if (admissions.length !== 1)
+    throw Error("Unadmitted/edited Slack event revision");
+  const admission = admissions[0];
+  if (
+    source.command.action !== admission.action ||
+    !Number.isSafeInteger(admission.expectedVersion) ||
+    admission.expectedVersion < 1
+  )
+    throw Error("Slack action/version admission mismatch");
+  return { ...source, admission };
 }
 export function createCanonicalSlackPort(
   input: SlackJournalPolicy,
@@ -385,6 +393,8 @@ export function createCanonicalSlackPort(
       )
         throw Error("Slack commit differs from original source/admission");
       if (old) return old;
+      if (s.event.phase !== "accepted")
+        throw Error("Original Slack event is not eligible for a new commit");
       const requestDigest = hash({
         source: s.revision,
         eventDigest: s.eventDigest,
