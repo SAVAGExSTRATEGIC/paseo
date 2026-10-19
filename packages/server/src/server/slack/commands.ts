@@ -5,6 +5,7 @@ interface TargetSelection {
   project?: string;
 }
 export type SlackCommand =
+  | { kind: "decision-unconfigured" }
   | { kind: "status" }
   | { kind: "cancel" }
   | { kind: "answer"; token: string; text: string }
@@ -13,6 +14,16 @@ export type SlackCommand =
   | { kind: "prompt"; text: string; selection: TargetSelection };
 
 export function parseSlackCommand(text: string): SlackCommand {
+  // Classify a copy only: never rewrite accepted event text or its provenance.
+  // Even invalid/duplicate selector prefixes cannot turn a reserved command
+  // into an ordinary prompt. Normal selector validation remains below.
+  let decisionCandidate = text.trimStart();
+  for (;;) {
+    const prefix = /^(?:host|project)=[^\s]*(?:\s+|$)/u.exec(decisionCandidate);
+    if (!prefix) break;
+    decisionCandidate = decisionCandidate.slice(prefix[0].length).trimStart();
+  }
+  if (/^decision(?:\s|$)/u.test(decisionCandidate)) return { kind: "decision-unconfigured" };
   if (text === "status") return { kind: "status" };
   if (text === "cancel") return { kind: "cancel" };
   if (text.startsWith("answer ")) {

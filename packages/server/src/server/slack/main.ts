@@ -12,6 +12,7 @@ import { ConversationRunner } from "./runner.js";
 import { SlackApi } from "./slack-api.js";
 import { runSocketMode } from "./socket.js";
 import { backupJournal, createBridgeLog } from "./operations.js";
+import { loadDecisionBootstrap } from "./decision-bootstrap.js";
 
 function bootstrapLog(code: string, correlation?: string): void {
   process.stdout.write(
@@ -45,6 +46,12 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
   const config = await readBridgeConfig(file);
   const release = requireSecret(process.env, "PASEO_SLACK_RELEASE");
   if (!/^[0-9a-f]{40}$/u.test(release)) throw new SlackPolicyError("release_commit_required");
+  const decisionQueue = await loadDecisionBootstrap({
+    configFile: file,
+    config,
+    release,
+    environment: process.env,
+  });
   const api = new SlackApi({
     botToken: requireSecret(process.env, "PASEO_SLACK_BOT_TOKEN"),
     appToken: requireSecret(process.env, "PASEO_SLACK_APP_TOKEN"),
@@ -81,7 +88,10 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
     for (const entry of config.hosts)
       hosts.set(
         entry.name,
-        new SlackDaemon({ ...entry, password: requireSecret(process.env, entry.passwordEnv) }),
+        new SlackDaemon({
+          ...entry,
+          password: requireSecret(process.env, entry.passwordEnv),
+        }),
       );
     const health: BridgeHealth = {
       release,
@@ -108,7 +118,14 @@ export async function runBridge(file: string, signal: AbortSignal): Promise<void
         failures.set(key, Date.now());
       }
     };
-    runner = new ConversationRunner({ config, store, hosts, signal: controller.signal, failure });
+    runner = new ConversationRunner({
+      config,
+      store,
+      hosts,
+      signal: controller.signal,
+      failure,
+      decisionQueue,
+    });
     const outbox = new SlackOutbox({ store, api, failure, now: Date.now });
     const consumer = createSocketConsumer({
       config,

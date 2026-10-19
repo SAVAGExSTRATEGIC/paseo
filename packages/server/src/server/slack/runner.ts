@@ -15,7 +15,10 @@ import { SlackDaemon, stableOperationId } from "./daemon.js";
 import { chunkOutput, redactSlackText } from "./output.js";
 import { questionContinuation, questionResponse, renderQuestion } from "./questions.js";
 
+import type { SlackDecisionComposition } from "./decision-composition.js";
+
 interface RunnerInput {
+  decisionQueue?: SlackDecisionComposition;
   config: BridgeConfig;
   store: ConversationStore;
   hosts: ReadonlyMap<string, SlackDaemon>;
@@ -54,12 +57,42 @@ export class ConversationRunner {
 
   async tick(): Promise<void> {
     for (const event of this.input.store.pending()) {
+      if (event.phase === "needs_attention" && this.input.decisionQueue?.owns(event)) {
+        try {
+          const recovered = await this.input.decisionQueue.recover(event);
+          if (recovered) await this.decisionRecorded(event);
+        } catch {
+          this.input.failure(
+            "canonical_decision_reconciliation_refused",
+            stableOperationId("event", event.id),
+          );
+        }
+        continue;
+      }
       if (event.phase !== "accepted") continue;
       try {
-        const command = parseSlackCommand(event.text);
+        const command = this.input.decisionQueue?.owns(event)
+          ? { kind: "decision-unconfigured" as const }
+          : parseSlackCommand(event.text);
         if (command.kind !== "prompt") await this.command(event, command);
       } catch (error) {
-        await this.refuse(event, error);
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "canonical_slack_outcome_unknown"
+        ) {
+          await this.input.store.transition(event.id, "accepted", "needs_attention");
+          await this.notice(
+            event,
+            "canonical-uncertain",
+            "The decision outcome needs receipt reconciliation. Original input is retained; it will not be blindly sent again.",
+          );
+          this.input.failure(
+            "canonical_decision_outcome_unknown",
+            stableOperationId("event", event.id),
+          );
+        } else await this.refuse(event, error);
       }
     }
     const keys = new Set(this.input.store.pending().map((event) => event.conversationKey));
@@ -73,6 +106,15 @@ export class ConversationRunner {
       this.jobs.set(key, job);
     }
     await this.interactions();
+  }
+
+  private async decisionRecorded(event: SlackIntake) {
+    await this.input.store.finish(event.id, [
+      {
+        id: stableOperationId("canonical-decision-result", event.id),
+        text: "Recorded in the existing Decision Queue. No session was resumed.",
+      },
+    ]);
   }
 
   private async workerFailed(key: string, error: unknown): Promise<void> {
@@ -131,6 +173,15 @@ export class ConversationRunner {
     event: SlackIntake,
     command: Exclude<ReturnType<typeof parseSlackCommand>, { kind: "prompt" }>,
   ): Promise<void> {
+    if (command.kind === "decision-unconfigured") {
+      if (!this.input.decisionQueue)
+        throw new SlackStateError(
+          "Canonical Decision Queue Slack intake is not commissioned; use Paseo. No answer or discussion was dispatched.",
+        );
+      await this.input.decisionQueue.handle(event);
+      await this.decisionRecorded(event);
+      return;
+    }
     const binding = this.input.store.binding(event.conversationKey);
     let text: string;
     if (command.kind === "select") {
@@ -170,7 +221,10 @@ export class ConversationRunner {
         questionContinuation(request, response),
       );
       // The claim is durable before submission. An uncertain result requires inspection, never replay.
-      await this.host(binding.target).respond(agent, { requestId: decision.requestId, response });
+      await this.host(binding.target).respond(agent, {
+        requestId: decision.requestId,
+        response,
+      });
       await this.input.store.resolveControl(command.token);
       text = "Answer submitted to Paseo.";
     } else {
@@ -180,9 +234,15 @@ export class ConversationRunner {
         );
       const target = await this.choose(event);
       if (!target) return;
-      const agent = await this.host(target).attach({ target, agentId: command.agentId });
+      const agent = await this.host(target).attach({
+        target,
+        agentId: command.agentId,
+      });
       if (!agent.workspaceId) throw new SlackStateError("Session has no workspace");
-      const tail = await agent.timeline.refetch({ limit: 1, projection: "canonical" });
+      const tail = await agent.timeline.refetch({
+        limit: 1,
+        projection: "canonical",
+      });
       if (tail.error) throw new SlackStateError("Cannot establish attachment history boundary");
       await this.input.store.bind({
         key: event.conversationKey,
@@ -197,7 +257,10 @@ export class ConversationRunner {
       text = `Attached ${agent.id} to this Slack conversation. Future task replies will be visible here. Existing history was not copied.\n${this.sessionLink(attached)}`;
     }
     await this.input.store.finish(event.id, [
-      { id: stableOperationId("command", event.id), text: redactSlackText(text) },
+      {
+        id: stableOperationId("command", event.id),
+        text: redactSlackText(text),
+      },
     ]);
   }
 
@@ -207,7 +270,10 @@ export class ConversationRunner {
         ? error.message
         : "This operation could not be authorized or completed. Use status and inspect the Paseo session.";
     await this.input.store.finish(event.id, [
-      { id: stableOperationId("refused", event.id), text: redactSlackText(text) },
+      {
+        id: stableOperationId("refused", event.id),
+        text: redactSlackText(text),
+      },
     ]);
     this.input.failure("slack_operation_refused", stableOperationId("event", event.id));
   }
@@ -272,7 +338,10 @@ export class ConversationRunner {
           await delay(1000, undefined, { signal: this.input.signal });
           return;
         }
-        const tail = await agent.timeline.refetch({ limit: 1, projection: "canonical" });
+        const tail = await agent.timeline.refetch({
+          limit: 1,
+          projection: "canonical",
+        });
         if (tail.error) throw new SlackStateError("Cannot checkpoint timeline before dispatch");
         await this.input.store.prepareDispatch(event.id, {
           epoch: tail.epoch,
@@ -283,7 +352,11 @@ export class ConversationRunner {
       if (!current) return;
       if (current.phase === "dispatching") {
         // The same message ID consults the daemon's durable receipt; it never chooses a new operation.
-        await this.host(binding.target).send({ agent, intake: current, text: input.text });
+        await this.host(binding.target).send({
+          agent,
+          intake: current,
+          text: input.text,
+        });
         await this.input.store.transition(event.id, "dispatching", "running");
         await this.notice(
           event,
@@ -392,7 +465,10 @@ export class ConversationRunner {
         id: stableOperationId("permission", token),
         text: `Permission required: ${label}`,
         blocks: [
-          ...sections.map((text) => ({ type: "section", text: { type: "plain_text", text } })),
+          ...sections.map((text) => ({
+            type: "section",
+            text: { type: "plain_text", text },
+          })),
           {
             type: "actions",
             elements: [
@@ -455,7 +531,10 @@ export class ConversationRunner {
     const chunks = chunkOutput(redactSlackText(`${label}:\n${output.text}`));
     await this.input.store.finish(
       active.id,
-      chunks.map((text, index) => ({ id: stableOperationId(`final-${index}`, active.id), text })),
+      chunks.map((text, index) => ({
+        id: stableOperationId(`final-${index}`, active.id),
+        text,
+      })),
     );
   }
 
