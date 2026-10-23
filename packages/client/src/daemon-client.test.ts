@@ -6998,3 +6998,67 @@ test("provider switch correlates the response and surfaces rejection", async () 
   );
   await rejected;
 });
+
+test("guidance refresh refuses unsupported hosts without sending legacy destructive refresh", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "guidance-gate",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  mock.triggerOpen({ features: {} });
+  await connecting;
+  await expect(
+    client.refreshAgentGuidance("agent", {
+      expectedSystemPromptHash: "a".repeat(64),
+      systemPrompt: "replacement",
+      dryRun: true,
+    }),
+  ).rejects.toThrow("does not support");
+  expect(mock.sent).toEqual([]);
+});
+
+test("guidance refresh transmits explicit dry-run and returns daemon readback", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "guidance-supported",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+  const connecting = client.connect();
+  mock.triggerOpen({ features: { agentGuidanceRefresh: true } });
+  await connecting;
+  const guidance = {
+    expectedSystemPromptHash: "a".repeat(64),
+    systemPrompt: "replacement",
+    dryRun: true,
+  };
+  const result = client.refreshAgentGuidance("agent", guidance);
+  const frame = JSON.parse(assertStr(mock.sent[0]));
+  expect(frame.message.guidance).toEqual(guidance);
+  const readback = {
+    previousSystemPromptHash: "a".repeat(64),
+    systemPromptHash: "b".repeat(64),
+    nativeSessionId: "native",
+    applied: false,
+    dryRun: true,
+  };
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "status",
+      payload: {
+        status: "agent_refreshed",
+        agentId: "agent",
+        requestId: frame.message.requestId,
+        timelineSize: 3,
+        guidance: readback,
+      },
+    }),
+  );
+  expect(await result).toEqual(readback);
+});

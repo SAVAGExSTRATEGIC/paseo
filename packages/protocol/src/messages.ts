@@ -1796,9 +1796,27 @@ export const ImportAgentRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+export const AgentGuidanceRefreshSchema = z.object({
+  expectedSystemPromptHash: z.string().regex(/^[a-f0-9]{64}$/),
+  systemPrompt: z.string(),
+  dryRun: z.boolean(),
+});
+export type AgentGuidanceRefresh = z.infer<typeof AgentGuidanceRefreshSchema>;
+
+export const AgentGuidanceRefreshResultSchema = z.object({
+  previousSystemPromptHash: z.string(),
+  systemPromptHash: z.string(),
+  nativeSessionId: z.string(),
+  applied: z.boolean(),
+  dryRun: z.boolean(),
+});
+export type AgentGuidanceRefreshResult = z.infer<typeof AgentGuidanceRefreshResultSchema>;
+
 export const RefreshAgentRequestMessageSchema = z.object({
   type: z.literal("refresh_agent_request"),
   agentId: z.string(),
+  // Capability-gated: unlike legacy reload, never interrupts or rewrites history.
+  guidance: AgentGuidanceRefreshSchema.optional(),
   requestId: z.string(),
 });
 
@@ -3687,6 +3705,7 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
+        agentGuidanceRefresh: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -3782,6 +3801,7 @@ export const AgentResumedStatusPayloadSchema = z
 export const AgentRefreshedStatusPayloadSchema = z
   .object({
     status: z.literal("agent_refreshed"),
+    guidance: AgentGuidanceRefreshResultSchema.optional(),
   })
   .extend(AgentStatusWithTimelineSchema.shape);
 

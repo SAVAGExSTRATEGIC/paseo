@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import {
@@ -12210,6 +12210,7 @@ test.each(["clear", "unread"] as const)(
   },
 );
 
+<<<<<<< ours
 test("provider switch ignores a detached runtime refresh from the retired session", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-switch-old-refresh-"));
   const registry = new AgentStorage(join(workdir, "agents"), logger);
@@ -12267,4 +12268,299 @@ test("provider switch ignores a detached runtime refresh from the retired sessio
     await registry.flush();
     rmSync(workdir, { recursive: true, force: true });
   }
+=======
+const guidanceHash = (text: string) => createHash("sha256").update(text).digest("hex");
+
+async function guidanceFixture() {
+  const workdir = mkdtempSync(join(tmpdir(), "guidance-refresh-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const closeGate = { run: async () => {} };
+  const hook = { changeAccount: false, pause: undefined as Promise<void> | undefined };
+  const command = { wait: undefined as Promise<void> | undefined };
+  const resumeState = { mismatch: false, fail: false, envs: [] as Array<Record<string, string>> };
+  class GuidanceSession extends TestAgentSession {
+    readonly closeSpy = vi.fn(async () => closeGate.run());
+    readonly interruptSpy = vi.fn(async () => {});
+    constructor(
+      config: AgentSessionConfig,
+      private readonly nativeId: string,
+    ) {
+      super(config);
+    }
+    tryHandleOutOfBand() {
+      return command.wait
+        ? {
+            run: async () => {
+              await command.wait;
+            },
+          }
+        : null;
+    }
+    override describePersistence() {
+      return { provider: this.provider, sessionId: this.nativeId };
+    }
+    override close() {
+      return this.closeSpy();
+    }
+    override interrupt() {
+      return this.interruptSpy();
+    }
+  }
+  const sessions: GuidanceSession[] = [];
+  class GuidanceClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig) {
+      const session = new GuidanceSession(config, "native-original");
+      sessions.push(session);
+      return session;
+    }
+    override async resumeSession(
+      handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+      context?: AgentLaunchContext,
+    ) {
+      if (resumeState.fail) throw new Error("resume failed");
+      resumeState.envs.push({ ...context?.env });
+      const session = new GuidanceSession(
+        { provider: "codex", cwd: workdir, ...config },
+        resumeState.mismatch ? "wrong-native" : handle.sessionId,
+      );
+      sessions.push(session);
+      return session;
+    }
+  }
+  const manager = new AgentManager({
+    clients: { codex: new GuidanceClient() },
+    rescueTimeouts: { reloadSessionCloseMs: 5 },
+    registry: storage,
+    logger,
+    pluginLifecycle: {
+      emit: () => {},
+      before: async (name, request) => {
+        if (name === "agent.session_open" && "reason" in request && request.reason === "refresh") {
+          if (hook.pause) await hook.pause;
+          if (hook.changeAccount && "env" in request)
+            request.env = { ...request.env, CODEX_HOME: "/other/account" };
+        }
+        return request;
+      },
+    },
+  });
+  const agent = await manager.createAgent(
+    { provider: "codex", cwd: workdir, systemPrompt: "old guidance", model: "gpt-5.4" },
+    undefined,
+    {
+      workspaceId: "wks_guidance",
+      labels: { role: "held-owner" },
+      env: { CODEX_HOME: "/test/pinned-account" },
+    },
+  );
+  const request = {
+    expectedSystemPromptHash: guidanceHash("old guidance"),
+    systemPrompt: "new guidance; preserve existing holds",
+    dryRun: false,
+  };
+  return { manager, storage, agent, sessions, request, closeGate, resumeState, hook, command };
+}
+
+test("guidance refresh dry-run and unchanged prompt never close or resume", async () => {
+  const f = await guidanceFixture();
+  expect(
+    await f.manager.refreshAgentGuidance(f.agent.id, { ...f.request, dryRun: true }),
+  ).toMatchObject({ applied: false, dryRun: true, nativeSessionId: "native-original" });
+  await f.manager.refreshAgentGuidance(f.agent.id, { ...f.request, systemPrompt: "old guidance" });
+  expect(f.sessions).toHaveLength(1);
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  expect(f.manager.getAgent(f.agent.id)?.config.systemPrompt).toBe("old guidance");
+});
+
+test("guidance refresh preserves native identity, account environment, timeline and ownership", async () => {
+  const f = await guidanceFixture();
+  await f.manager.appendTimelineItem(f.agent.id, {
+    type: "assistant_message",
+    text: "existing checkpoint",
+  });
+  f.sessions[0]!.pushEvent({
+    type: "turn_completed",
+    provider: "codex",
+    turnId: "prior",
+    usage: { inputTokens: 17, outputTokens: 5 },
+  });
+  await vi.waitFor(() =>
+    expect(f.manager.getAgent(f.agent.id)?.lastUsage).toEqual({ inputTokens: 17, outputTokens: 5 }),
+  );
+  const before = f.manager.getTimeline(f.agent.id);
+  const result = await f.manager.refreshAgentGuidance(f.agent.id, f.request);
+  expect(result).toMatchObject({
+    applied: true,
+    nativeSessionId: "native-original",
+    systemPromptHash: guidanceHash(f.request.systemPrompt),
+  });
+  expect(f.manager.getTimeline(f.agent.id)).toEqual(before);
+  expect(f.manager.getAgent(f.agent.id)?.lastUsage).toEqual({ inputTokens: 17, outputTokens: 5 });
+  expect(f.manager.getAgent(f.agent.id)).toMatchObject({
+    id: f.agent.id,
+    workspaceId: "wks_guidance",
+    labels: { role: "held-owner" },
+    config: { model: "gpt-5.4", systemPrompt: f.request.systemPrompt },
+  });
+  expect(f.resumeState.envs[0]?.CODEX_HOME).toBe("/test/pinned-account");
+  expect((await f.storage.get(f.agent.id))?.config.systemPrompt).toBe(f.request.systemPrompt);
+  expect(f.sessions[0]!.interruptSpy).not.toHaveBeenCalled();
+});
+
+test("guidance refresh serializes CAS writers and rejects stale prompt without a second reload", async () => {
+  const f = await guidanceFixture();
+  const results = await Promise.allSettled([
+    f.manager.refreshAgentGuidance(f.agent.id, f.request),
+    f.manager.refreshAgentGuidance(f.agent.id, f.request),
+  ]);
+  expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"]);
+  expect(f.sessions).toHaveLength(2);
+});
+
+test("guidance refresh refuses pending questions and permission replies without interruption", async () => {
+  const f = await guidanceFixture();
+  const agent = f.manager.getAgent(f.agent.id)!;
+  agent.pendingPermissions.set("question", {
+    id: "question",
+    provider: "codex",
+    name: "answer needed",
+    kind: "tool",
+  });
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "pending permissions",
+  );
+  agent.pendingPermissions.clear();
+  agent.inFlightPermissionResponses.add("responding");
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "pending permissions",
+  );
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  expect(f.manager.getAgent(f.agent.id)?.lifecycle).toBe("idle");
+});
+
+test("guidance refresh refuses running children even with idle parent", async () => {
+  const f = await guidanceFixture();
+  f.sessions[0]!.pushEvent({
+    type: "provider_subagent",
+    provider: "codex",
+    event: { type: "upsert", id: "child", status: "running" },
+  });
+  await vi.waitFor(() => expect(f.manager.listProviderSubagents(f.agent.id)).toHaveLength(1));
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "provider subagents",
+  );
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  expect(f.manager.listProviderSubagents(f.agent.id)[0]?.status).toBe("running");
+});
+
+test("guidance refresh fences new foreground work while provider close is pending", async () => {
+  const f = await guidanceFixture();
+  const gate = deferred<void>();
+  f.closeGate.run = () => gate.promise;
+  const refresh = f.manager.refreshAgentGuidance(f.agent.id, f.request);
+  await vi.waitFor(() => expect(f.sessions[0]!.closeSpy).toHaveBeenCalled());
+  expect(() => f.manager.streamAgent(f.agent.id, "new turn")).toThrow("refresh is in progress");
+  expect(() => f.manager.tryRunOutOfBand(f.agent.id, "/goal pause")).toThrow(
+    "refresh is in progress",
+  );
+  // Passing the legacy close deadline must not release guidance admission.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(() => f.manager.streamAgent(f.agent.id, "still closed")).toThrow("refresh is in progress");
+  await expect(
+    f.manager.respondToPermission(f.agent.id, "stale", { behavior: "deny" }),
+  ).rejects.toThrow("refresh is in progress");
+  gate.resolve();
+  await refresh;
+});
+
+test("guidance refresh rejects changed native identity before registration and closes replacement", async () => {
+  const f = await guidanceFixture();
+  f.resumeState.mismatch = true;
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "native session identity",
+  );
+  expect(f.sessions[1]!.closeSpy).toHaveBeenCalledOnce();
+  expect(await f.storage.get(f.agent.id)).toMatchObject({
+    lastStatus: "closed",
+    config: { systemPrompt: "old guidance" },
+  });
+  expect(f.manager.getAgent(f.agent.id)).toBeNull();
+});
+
+test("guidance refresh close failure preserves original live guidance", async () => {
+  const f = await guidanceFixture();
+  f.closeGate.run = async () => {
+    throw new Error("close failed");
+  };
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "close failed",
+  );
+  expect(f.sessions).toHaveLength(1);
+  expect(f.manager.getAgent(f.agent.id)).toMatchObject({
+    lifecycle: "idle",
+    config: { systemPrompt: "old guidance" },
+  });
+});
+
+test("guidance refresh refuses an already running out-of-band command", async () => {
+  const f = await guidanceFixture();
+  const gate = deferred<void>();
+  f.command.wait = gate.promise;
+  expect(f.manager.tryRunOutOfBand(f.agent.id, "/goal pause")).toBe(true);
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "out-of-band",
+  );
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  gate.resolve();
+});
+
+test("guidance refresh rejects hook account drift before provider close", async () => {
+  const f = await guidanceFixture();
+  f.hook.changeAccount = true;
+  await expect(f.manager.refreshAgentGuidance(f.agent.id, f.request)).rejects.toThrow(
+    "account environment",
+  );
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  expect(f.manager.getAgent(f.agent.id)?.lifecycle).toBe("idle");
+});
+
+test("guidance refresh rechecks permissions delivered while launch hook awaits", async () => {
+  const f = await guidanceFixture();
+  const gate = deferred<void>();
+  f.hook.pause = gate.promise;
+  const refresh = f.manager.refreshAgentGuidance(f.agent.id, f.request);
+  await vi.waitFor(() =>
+    expect(() => f.manager.tryRunOutOfBand(f.agent.id, "/goal pause")).toThrow(
+      "refresh is in progress",
+    ),
+  );
+  f.manager.getAgent(f.agent.id)!.pendingPermissions.set("late", {
+    id: "late",
+    provider: "codex",
+    name: "late question",
+    kind: "tool",
+  });
+  gate.resolve();
+  await expect(refresh).rejects.toThrow("pending permissions");
+  expect(f.sessions[0]!.closeSpy).not.toHaveBeenCalled();
+  expect(f.manager.getAgent(f.agent.id)?.lifecycle).toBe("idle");
+});
+
+test("guidance refresh serializes model and metadata setters without losing new guidance", async () => {
+  const f = await guidanceFixture();
+  const gate = deferred<void>();
+  f.closeGate.run = () => gate.promise;
+  const refresh = f.manager.refreshAgentGuidance(f.agent.id, f.request);
+  await vi.waitFor(() => expect(f.sessions[0]!.closeSpy).toHaveBeenCalled());
+  const model = f.manager.setAgentModel(f.agent.id, "gpt-5.4-mini");
+  const title = f.manager.setTitle(f.agent.id, "Preserved title");
+  gate.resolve();
+  await Promise.all([refresh, model, title]);
+  expect(f.manager.getAgent(f.agent.id)?.config).toMatchObject({
+    systemPrompt: f.request.systemPrompt,
+    model: "gpt-5.4-mini",
+  });
+  expect((await f.storage.get(f.agent.id))?.config.systemPrompt).toBe(f.request.systemPrompt);
+>>>>>>> theirs
 });

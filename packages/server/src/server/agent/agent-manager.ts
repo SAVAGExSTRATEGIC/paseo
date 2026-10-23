@@ -7,8 +7,13 @@ import { projectTimelineRows } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+<<<<<<< ours
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+=======
+import { createHash, randomUUID } from "node:crypto";
+import type { AgentGuidanceRefresh, AgentGuidanceRefreshResult } from "@getpaseo/protocol/messages";
+>>>>>>> theirs
 import { basename, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import {
@@ -756,6 +761,10 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
+  private readonly guidanceRefreshes = new Set<string>();
+  private readonly outOfBandRuns = new Map<string, number>();
+  // Runtime-only account environment; never serialize credentials into agent records.
+  private readonly sessionLaunchEnvs = new WeakMap<AgentSession, Record<string, string>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
@@ -1310,6 +1319,7 @@ export class AgentManager {
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
     const session = await client.createSession(providerLaunchConfig, launchContext, createOptions);
+    this.sessionLaunchEnvs.set(session, { ...launchContext.env });
     await this.requireExternalMcpSupport(session, storedConfig);
     const agent = await this.registerSession(session, storedConfig, resolvedAgentId, {
       labels: options.labels,
@@ -1436,6 +1446,7 @@ export class AgentManager {
       launchContext,
       currentResumeOptions,
     );
+    this.sessionLaunchEnvs.set(session, { ...launchContext.env });
     await this.requireExternalMcpSupport(session, storedConfig);
     return this.registerSession(session, storedConfig, resolvedAgentId, {
       ...options,
@@ -1502,6 +1513,7 @@ export class AgentManager {
       const timelineRows = buildImportedTimelineRows(imported.timeline);
       const initialTitle = resolveImportedAgentTitle(importedConfig, timelineRows);
 
+      this.sessionLaunchEnvs.set(imported.session, { ...launchContext.env });
       handedToRegistration = true;
       const agent = await this.registerSession(imported.session, importedConfig, resolvedAgentId, {
         labels: input.labels,
@@ -1531,6 +1543,78 @@ export class AgentManager {
   // new epoch is minted and provider history is re-streamed — this is what the
   // user-facing "Reload agent" action wants when the on-disk session was
   // mutated outside Paseo.
+  refreshAgentGuidance(
+    agentId: string,
+    request: AgentGuidanceRefresh,
+  ): Promise<AgentGuidanceRefreshResult> {
+    return this.trackAgentRegistrationOperation(
+      this.runLifecycleMutation(agentId, async () => {
+        const agent = this.requireSessionAgent(agentId);
+        this.assertGuidanceRefreshIdle(agentId);
+        if (!agent.persistence?.sessionId) {
+          throw new Error("Guidance refresh requires an existing native session");
+        }
+        const hash = (prompt: string) => createHash("sha256").update(prompt).digest("hex");
+        const previousSystemPromptHash = hash(agent.config.systemPrompt ?? "");
+        if (previousSystemPromptHash !== request.expectedSystemPromptHash) {
+          throw new Error("Guidance changed; inspect it again before refreshing");
+        }
+        const result: AgentGuidanceRefreshResult = {
+          previousSystemPromptHash,
+          systemPromptHash: hash(request.systemPrompt),
+          nativeSessionId: agent.persistence.sessionId,
+          applied: false,
+          dryRun: request.dryRun,
+        };
+        if (request.dryRun || previousSystemPromptHash === result.systemPromptHash) return result;
+        // Foreground entry points are synchronous and do not use the lifecycle lane.
+        // Fence them before the first await so a new turn cannot race this reload.
+        this.guidanceRefreshes.add(agentId);
+        try {
+          const refreshed = await this.reloadAgentSessionInternal(
+            agentId,
+            { systemPrompt: request.systemPrompt },
+            { requireIdle: true },
+          );
+          if (refreshed.persistence?.sessionId !== result.nativeSessionId) {
+            throw new Error("Provider changed native session identity during guidance refresh");
+          }
+          result.systemPromptHash = hash(refreshed.config.systemPrompt ?? "");
+          result.applied = true;
+          return result;
+        } finally {
+          this.guidanceRefreshes.delete(agentId);
+        }
+      }),
+    );
+  }
+
+  private assertGuidanceRefreshIdle(agentId: string): void {
+    const agent = this.requireSessionAgent(agentId);
+    if (agent.lifecycle !== "idle" || this.hasInFlightRun(agentId) || agent.pendingReplacement) {
+      throw new Error("Guidance refresh requires an idle agent without an in-flight turn");
+    }
+    if (
+      agent.pendingPermissions.size > 0 ||
+      agent.inFlightPermissionResponses.size > 0 ||
+      agent.bufferedPermissionResolutions.size > 0
+    ) {
+      throw new Error("Guidance refresh cannot replace pending permissions or questions");
+    }
+    if ((this.outOfBandRuns.get(agentId) ?? 0) > 0) {
+      throw new Error("Guidance refresh cannot interrupt an out-of-band command");
+    }
+    if (this.providerSubagents.list(agentId).some((child) => child.status === "running")) {
+      throw new Error("Guidance refresh cannot interrupt provider subagents");
+    }
+  }
+
+  private assertNoGuidanceRefresh(agentId: string): void {
+    if (this.guidanceRefreshes.has(agentId)) {
+      throw new Error("Agent guidance refresh is in progress");
+    }
+  }
+
   reloadAgentSession(
     agentId: string,
     overrides?: Partial<AgentSessionConfig>,
@@ -1743,15 +1827,18 @@ export class AgentManager {
   private async reloadAgentSessionInternal(
     agentId: string,
     overrides?: Partial<AgentSessionConfig>,
-    options?: { rehydrateFromDisk?: boolean },
+    {
+      rehydrateFromDisk = false,
+      requireIdle = false,
+    }: { rehydrateFromDisk?: boolean; requireIdle?: boolean } = {},
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
     let existing = this.requireSessionAgent(agentId);
+    if (requireIdle) this.assertGuidanceRefreshIdle(agentId);
     if (this.hasInFlightRun(agentId)) {
       await this.cancelAgentRunBefore(agentId, "reload");
       existing = this.requireSessionAgent(agentId);
     }
-    const rehydrateFromDisk = options?.rehydrateFromDisk ?? false;
     const preservedHistoryPrimed = existing.historyPrimed;
     const preservedLastUsage = existing.lastUsage;
     const preservedLastError = existing.lastError;
@@ -1759,39 +1846,25 @@ export class AgentManager {
     const handle = existing.persistence;
     const provider = handle?.provider ?? existing.provider;
     const client = this.requireClient(provider);
-    const refreshConfig = {
-      ...existing.config,
-      ...overrides,
-      provider,
-    } as AgentSessionConfig;
-    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
-      refreshConfig,
-      agentId,
-    );
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
-    const launchContext = await this.buildLaunchContext(
-      agentId,
-      client,
-      storedConfig.cwd,
-      paseoToolPolicy,
-      undefined,
-      { reason: "refresh", purpose: "interactive", workspaceId: existing.workspaceId },
-    );
-    const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
-    if (
-      Object.keys(storedConfig.mcpServers ?? {}).length > 0 &&
-      existing.session.capabilities.supportsMcpServers !== true
-    ) {
-      throw new Error(`Provider '${provider}' does not support MCP servers`);
-    }
-
+    const { storedConfig, providerLaunchConfig, launchContext, paseoToolPolicy } =
+      await this.prepareReloadConfiguration(
+        agentId,
+        existing,
+        client,
+        provider,
+        overrides,
+        requireIdle,
+      );
+    // The async preparation helper yielded once more before control returned here.
+    if (requireIdle) this.assertGuidanceRefreshIdle(agentId);
     let session: AgentSession | undefined;
     let closedExisting: ManagedAgentClosed | undefined;
     let handedToRegistration = false;
     try {
       // A persisted thread can have only one writer, even when its turn is idle.
-      await this.closeReloadedSession(existing.session, agentId);
+      await this.closeReloadedSession(existing.session, agentId, requireIdle);
       await this.drainSessionEvents(agentId);
       this.cancelRunningProviderSubagents(agentId);
       closedExisting = this.prepareAgentForClosure(existing, "agent reloaded");
@@ -1802,8 +1875,12 @@ export class AgentManager {
       session = handle
         ? await client.resumeSession(handle, providerLaunchConfig, launchContext)
         : await client.createSession(providerLaunchConfig, launchContext);
+      this.sessionLaunchEnvs.set(session, { ...launchContext.env });
       await this.requireExternalMcpSupport(session, storedConfig);
       this.assertAcceptingAgentRegistrations();
+      if (requireIdle) {
+        this.assertSameNativeSession(session, handle);
+      }
 
       if (rehydrateFromDisk) {
         // Wipe the in-memory timeline so registerSession mints a new epoch and
@@ -1830,13 +1907,7 @@ export class AgentManager {
         restoring: true,
       });
     } catch (error) {
-      if (closedExisting) {
-        this.emitClosedAgent(closedExisting, { persist: false });
-      } else if (this.agents.get(agentId) === existing) {
-        existing.lifecycle = "error";
-        existing.lastError = error instanceof Error ? error.message : String(error);
-        this.emitState(existing);
-      }
+      this.reportReloadFailure(agentId, existing, closedExisting, error, requireIdle);
       throw error;
     } finally {
       if (!handedToRegistration) {
@@ -1852,13 +1923,97 @@ export class AgentManager {
     }
   }
 
-  private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
+  private assertSameNativeSession(
+    session: AgentSession,
+    handle: AgentPersistenceHandle | null,
+  ): void {
+    const resumed = session.describePersistence();
+    if (resumed?.sessionId !== handle?.sessionId || resumed?.provider !== handle?.provider) {
+      throw new Error("Provider changed native session identity during guidance refresh");
+    }
+  }
+
+  private reportReloadFailure(
+    agentId: string,
+    existing: ActiveManagedAgent,
+    closed: ManagedAgentClosed | undefined,
+    error: unknown,
+    requireIdle: boolean,
+  ): void {
+    if (closed) this.emitClosedAgent(closed, { persist: false });
+    else if (!requireIdle && this.agents.get(agentId) === existing) {
+      existing.lifecycle = "error";
+      existing.lastError = error instanceof Error ? error.message : String(error);
+      this.emitState(existing);
+    }
+  }
+
+  private async prepareReloadConfiguration(
+    agentId: string,
+    existing: ActiveManagedAgent,
+    client: AgentClient,
+    provider: AgentProvider,
+    overrides: Partial<AgentSessionConfig> | undefined,
+    requireIdle: boolean,
+  ) {
+    const refreshConfig = {
+      ...existing.config,
+      ...overrides,
+      provider,
+    } as AgentSessionConfig;
+    const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
+      refreshConfig,
+      agentId,
+    );
+    const previousLaunchEnv = this.sessionLaunchEnvs.get(existing.session);
+    if (requireIdle && !previousLaunchEnv) {
+      throw new Error("Guidance refresh requires a known native session account environment");
+    }
+    const launchContext = await this.buildLaunchContext(
+      agentId,
+      client,
+      storedConfig.cwd,
+      paseoToolPolicy,
+      requireIdle ? previousLaunchEnv : undefined,
+      { reason: "refresh", purpose: "interactive", workspaceId: existing.workspaceId },
+    );
+    const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
+    if (requireIdle && previousLaunchEnv) {
+      const refreshedEnv = launchContext.env ?? {};
+      const keys = new Set([...Object.keys(previousLaunchEnv), ...Object.keys(refreshedEnv)]);
+      if ([...keys].some((key) => previousLaunchEnv[key] !== refreshedEnv[key])) {
+        throw new Error("Guidance refresh cannot change the native session account environment");
+      }
+    }
+    if (
+      Object.keys(storedConfig.mcpServers ?? {}).length > 0 &&
+      existing.session.capabilities.supportsMcpServers !== true
+    ) {
+      throw new Error(`Provider '${provider}' does not support MCP servers`);
+    }
+
+    // Refusals leave lifecycle and attention untouched.
+    if (requireIdle) this.assertGuidanceRefreshIdle(agentId);
+    return { storedConfig, providerLaunchConfig, launchContext, paseoToolPolicy };
+  }
+
+  private async closeReloadedSession(
+    session: AgentSession,
+    agentId: string,
+    waitForRelease = false,
+  ): Promise<void> {
     let operation = this.reloadedSessionCloses.get(session);
     if (!operation) {
       operation = session.close();
       this.reloadedSessionCloses.set(session, operation);
       // Keep pending closes across request timeouts; a retry must await the same release.
       void operation.catch(() => this.reloadedSessionCloses.delete(session));
+    }
+    // Guidance replacement must retain its admission fence until actual release.
+    // A transport timeout is not evidence that the provider stopped closing.
+    if (waitForRelease) {
+      await operation;
+      return;
     }
     const result = await this.waitWithTimeout({
       operation,
@@ -2149,7 +2304,11 @@ export class AgentManager {
   }
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
+<<<<<<< ours
     return this.runSessionMutation(agentId, () => this.setAgentModeUnlocked(agentId, modeId));
+=======
+    return this.runLifecycleMutation(agentId, () => this.setAgentModeUnlocked(agentId, modeId));
+>>>>>>> theirs
   }
 
   private async setAgentModeUnlocked(
@@ -2172,7 +2331,11 @@ export class AgentManager {
   }
 
   async setAgentModel(agentId: string, modelId: string | null): Promise<void> {
+<<<<<<< ours
     return this.runSessionMutation(agentId, () => this.setAgentModelUnlocked(agentId, modelId));
+=======
+    return this.runLifecycleMutation(agentId, () => this.setAgentModelUnlocked(agentId, modelId));
+>>>>>>> theirs
   }
 
   private async setAgentModelUnlocked(agentId: string, modelId: string | null): Promise<void> {
@@ -2197,7 +2360,11 @@ export class AgentManager {
     agentId: string,
     thinkingOptionId: string | null,
   ): Promise<AgentProviderNotice | null> {
+<<<<<<< ours
     return this.runSessionMutation(agentId, () =>
+=======
+    return this.runLifecycleMutation(agentId, () =>
+>>>>>>> theirs
       this.setAgentThinkingOptionUnlocked(agentId, thinkingOptionId),
     );
   }
@@ -2237,10 +2404,24 @@ export class AgentManager {
   }
 
   async setAgentFeature(agentId: string, featureId: string, value: unknown): Promise<void> {
+<<<<<<< ours
     return this.runSessionMutation(agentId, () =>
       this.setAgentFeatureUnlocked(agentId, featureId, value),
     );
   }
+=======
+    return this.runLifecycleMutation(agentId, () =>
+      this.setAgentFeatureUnlocked(agentId, featureId, value),
+    );
+  }
+
+  private async setAgentFeatureUnlocked(
+    agentId: string,
+    featureId: string,
+    value: unknown,
+  ): Promise<void> {
+    const agent = this.requireAgent(agentId);
+>>>>>>> theirs
 
   private async setAgentFeatureUnlocked(
     agentId: string,
@@ -2306,11 +2487,15 @@ export class AgentManager {
   }
 
   async setTitle(agentId: string, title: string): Promise<void> {
+<<<<<<< ours
     const normalizedTitle = title.trim();
     if (!normalizedTitle) return;
     await this.runLifecycleMutation(agentId, () =>
       this.updateAgentMetadataUnlocked(agentId, { title: normalizedTitle }),
     );
+=======
+    return this.runLifecycleMutation(agentId, () => this.setTitleUnlocked(agentId, title));
+>>>>>>> theirs
   }
 
   private async setTitleUnlocked(agentId: string, title: string): Promise<void> {
@@ -2684,6 +2869,7 @@ export class AgentManager {
    * broadcast like normal timeline events.
    */
   tryRunOutOfBand(agentId: string, prompt: AgentPromptInput, options?: AgentRunOptions): boolean {
+    this.assertNoGuidanceRefresh(agentId);
     const agent = this.requireSessionAgent(agentId);
     if (this.pendingRewinds.has(agentId)) {
       throw new Error(`Agent ${agentId} already has an active run`);
@@ -2830,6 +3016,7 @@ export class AgentManager {
     prompt: AgentPromptInput,
     options?: AgentRunOptions,
   ): AsyncGenerator<AgentStreamEvent> {
+    this.assertNoGuidanceRefresh(agentId);
     const existingAgent = this.requireSessionAgent(agentId);
     this.logger.trace(
       {
@@ -3339,7 +3526,12 @@ export class AgentManager {
     requestId: string,
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void> {
+<<<<<<< ours
     const agent = this.requireSessionAgent(agentId);
+=======
+    this.assertNoGuidanceRefresh(agentId);
+    const agent = this.requireAgent(agentId);
+>>>>>>> theirs
     if (agent.inFlightPermissionResponses.has(requestId)) {
       throw new Error("A response to this permission request is already being submitted");
     }
@@ -3525,6 +3717,7 @@ export class AgentManager {
   }
 
   async rewind(agentId: string, messageId: string, mode: RewindMode): Promise<void> {
+<<<<<<< ours
     // Block new prompts synchronously, including while waiting for the lifecycle
     // lane or cancellation of an existing run. Keep this separate from run state
     // so rewind can still cancel the actual foreground turn after admission.
@@ -3543,6 +3736,9 @@ export class AgentManager {
     messageId: string,
     mode: RewindMode,
   ): Promise<void> {
+=======
+    this.assertNoGuidanceRefresh(agentId);
+>>>>>>> theirs
     const agent = this.requireSessionAgent(agentId);
     if (agent.config.continuationArchive) {
       throw new Error(
