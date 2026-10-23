@@ -1,4 +1,7 @@
-import type { FetchRecentProviderSessionEntry } from "@getpaseo/client/internal/daemon-client";
+import type {
+  DaemonClient,
+  FetchRecentProviderSessionEntry,
+} from "@getpaseo/client/internal/daemon-client";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { i18n } from "@/i18n/i18next";
 
@@ -30,7 +33,9 @@ export interface SessionsQueryResult {
     | {
         entries: FetchRecentProviderSessionEntry[];
         filteredAlreadyImportedCount?: number;
-        providerErrors?: Array<{ provider: string; message: string }>;
+        providerErrors?: Awaited<
+          ReturnType<DaemonClient["fetchRecentProviderSessions"]>
+        >["providerErrors"];
       }
     | undefined;
   isError: boolean;
@@ -115,7 +120,16 @@ export function hasMoreSessions(
 export interface ProviderErrorRow {
   provider: string;
   label: string;
+  guidance?: string;
 }
+
+// Internal diagnostics never determine user-facing copy.
+const SEARCH_ERROR_GUIDANCE = {
+  timeout: "Session listing timed out. Retry the search.",
+  scan_limit: "Session search reached its scan limit. Narrow the search or workspace and retry.",
+  pagination_stalled:
+    "Session search could not finish because the provider repeated a page. Retry the search.",
+} as const;
 
 /**
  * One row per provider that could not be listed, whether the request itself
@@ -135,7 +149,13 @@ export function collectProviderErrorRows(
     if (!query || provider === undefined) continue;
     const failed = query.isError || (query.data?.providerErrors?.length ?? 0) > 0;
     if (!failed) continue;
-    rows.push({ provider, label: providerLabelById.get(provider) ?? provider });
+    const kind = query.data?.providerErrors?.find((error) => error.provider === provider)?.kind;
+    const guidance = kind ? SEARCH_ERROR_GUIDANCE[kind] : undefined;
+    rows.push({
+      provider,
+      label: providerLabelById.get(provider) ?? provider,
+      ...(guidance ? { guidance } : {}),
+    });
   }
   return rows;
 }

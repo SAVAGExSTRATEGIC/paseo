@@ -5,6 +5,7 @@ import type {
   AgentManager,
   ManagedAgent,
   ManagedImportableProviderSession,
+  ImportableSessionProviderError,
 } from "./agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "./agent-storage.js";
 import type { AgentPersistenceHandle, AgentProvider } from "./agent-sdk-types.js";
@@ -62,6 +63,7 @@ export class ImportSessionsRequestError extends Error {
 }
 
 export interface ListImportableProviderSessionsInput {
+  signal?: AbortSignal;
   request: FetchRecentProviderSessionsRequestMessage;
   agentManager: Pick<AgentManager, "listAgents" | "listImportableSessions">;
   agentStorage: Pick<AgentStorage, "list">;
@@ -71,7 +73,7 @@ export interface ListImportableProviderSessionsInput {
 export interface ListImportableProviderSessionsResult {
   entries: RecentProviderSessionDescriptorPayload[];
   filteredAlreadyImportedCount: number;
-  providerErrors: Array<{ provider: string; message: string }>;
+  providerErrors: ImportableSessionProviderError[];
 }
 
 export interface ImportProviderSessionInput {
@@ -132,7 +134,9 @@ export async function listImportableProviderSessions(
   const query = normalizeImportSessionQuery(request.query);
   const listingLimit = query ? IMPORT_SESSION_SEARCH_SCAN_LIMIT : limit + importedSessions.count;
 
+  input.signal?.throwIfAborted();
   const listing = await agentManager.listImportableSessions({
+    ...(input.signal ? { signal: input.signal } : {}),
     limit: listingLimit,
     ...(query ? { query } : {}),
     ...(query ? { scanLimit: IMPORT_SESSION_SEARCH_SCAN_LIMIT } : {}),

@@ -708,6 +708,11 @@ export class Session {
   private readonly paseoHome: string;
   private readonly projectIcons: ProjectIconReader;
   private readonly worktreesRoot: string | undefined;
+  // Supersede obsolete searches only within their originating socket source.
+  private readonly importSessionListings = new Map<
+    AbortController,
+    { providers: Set<string> | null; sourceSignal: AbortSignal }
+  >();
   private readonly rewindInitiators = new Map<string, object | undefined>();
 
   private agentManager: AgentManager;
@@ -6216,13 +6221,29 @@ export class Session {
   private async handleFetchRecentProviderSessions(
     request: Extract<SessionInboundMessage, { type: "fetch_recent_provider_sessions_request" }>,
   ): Promise<void> {
+    const providers = request.providers ? new Set(request.providers) : null;
+    const sourceSignal = this.delivery.requestSignal;
+    for (const [previous, listing] of this.importSessionListings) {
+      if (listing.sourceSignal !== sourceSignal) continue;
+      if (
+        !providers ||
+        !listing.providers ||
+        [...providers].some((provider) => listing.providers!.has(provider))
+      )
+        previous.abort();
+    }
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, sourceSignal]);
+    this.importSessionListings.set(controller, { providers, sourceSignal });
     try {
       const result = await listImportableProviderSessions({
         request,
+        signal,
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         providerSnapshotManager: this.providerSnapshotManager,
       });
+      signal.throwIfAborted();
       this.emit({
         type: "fetch_recent_provider_sessions_response",
         payload: {
@@ -6344,6 +6365,8 @@ export class Session {
           code,
         },
       });
+    } finally {
+      this.importSessionListings.delete(controller);
     }
   }
 
@@ -8435,6 +8458,8 @@ export class Session {
    * Clean up session resources
    */
   public async cleanup(): Promise<void> {
+    for (const controller of this.importSessionListings.keys()) controller.abort();
+    this.importSessionListings.clear();
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
     await this.delivery.close();
