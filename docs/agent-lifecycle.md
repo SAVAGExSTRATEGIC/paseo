@@ -280,3 +280,39 @@ Each agent is a single JSON file. Fields relevant to this doc:
 | `lastStatus`                                 | `AgentStatus` | `initializing` / `idle` / `running` / `error` / `closed`                           |
 
 See [`docs/data-model.md`](./data-model.md) for the full agent record.
+
+## Refreshing guidance on an existing native session
+
+`PaseoAgentHandle.refreshGuidance({ expectedSystemPromptHash, systemPrompt, dryRun })`
+replaces the stored system prompt through the provider's normal native-session resume
+path. The SHA-256 comparison uses the UTF-8 bytes of `config.systemPrompt` (an absent
+prompt hashes as the empty string). Inspect the complete current prompt first and
+preserve independent instructions and holds when constructing its replacement.
+
+The host must advertise `server_info.features.agentGuidanceRefresh`. Clients refuse
+unsupported hosts before sending anything: an older host would ignore the optional
+`refresh_agent_request.guidance` field and perform the legacy interrupting reload.
+Legacy refresh requests without guidance retain their existing behavior.
+
+Guidance refresh requires a loaded, idle native session, with no pending permission
+or question, permission response, foreground turn, replacement, background command,
+or running provider child. Comparison and reload run in the same lifecycle lane;
+new foreground and background commands are fenced during the reload. Launch hooks
+must preserve the captured account environment. Refusals occur before provider close.
+The environment is kept only in memory and is never added to persisted agent records.
+
+Use `dryRun: true` first to check the current prompt hash and idle state without
+opening, closing, or invoking hooks. Dry-run is a snapshot, not a reservation: apply
+can still refuse if the state or launch hooks change. Readback includes previous and
+resulting hashes, native session ID, and whether anything was applied. An unchanged
+prompt is a no-op. The reload preserves Paseo/native IDs, timeline, ownership and
+configuration other than `systemPrompt`; it sends no new user turn.
+
+The guarded operation waits for actual provider close, even if its client request
+times out; admission remains fenced until close settles. After a client timeout,
+inspect the agent and prompt hash before retrying. If closing fails, the original
+guidance remains. If native resume fails after close,
+the original stored guidance remains in a closed, retryable agent. A provider that
+returns a different native ID is rejected before registration and the unexpected
+session is closed. No daemon restart, native transcript edit, policy inference, or
+automatic prompt migration is part of this API.

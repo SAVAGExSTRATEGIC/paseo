@@ -3251,12 +3251,32 @@ export class DaemonClient {
     return status.agent;
   }
 
-  async refreshAgent(agentId: string, requestId?: string): Promise<AgentRefreshedStatusPayload> {
+  async refreshAgentGuidance(
+    agentId: string,
+    guidance: import("@getpaseo/protocol/messages").AgentGuidanceRefresh,
+  ): Promise<import("@getpaseo/protocol/messages").AgentGuidanceRefreshResult> {
+    if (this.lastServerInfoMessage?.features?.agentGuidanceRefresh !== true) {
+      throw new Error("This host does not support guidance refresh; update the host first");
+    }
+    const result = await this.refreshAgent(agentId, undefined, guidance);
+    if (!result.guidance) throw new Error("Host omitted guidance refresh readback");
+    return result.guidance;
+  }
+
+  async refreshAgent(
+    agentId: string,
+    requestId?: string,
+    guidance?: import("@getpaseo/protocol/messages").AgentGuidanceRefresh,
+  ): Promise<AgentRefreshedStatusPayload> {
+    if (guidance && this.lastServerInfoMessage?.features?.agentGuidanceRefresh !== true) {
+      throw new Error("This host does not support guidance refresh; update the host first");
+    }
     const resolvedRequestId = this.createRequestId(requestId);
     const message = SessionInboundMessageSchema.parse({
       type: "refresh_agent_request",
       agentId,
       requestId: resolvedRequestId,
+      ...(guidance ? { guidance } : {}),
     });
     return this.sendRequest({
       requestId: resolvedRequestId,

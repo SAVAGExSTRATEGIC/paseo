@@ -4,6 +4,8 @@ import type { DaemonClientConfig } from "./daemon-client.js";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
 import type {
   AgentSnapshotPayload,
+  AgentGuidanceRefresh,
+  AgentGuidanceRefreshResult,
   CreationSnapshot,
   CreateAgentRequestMessage,
   FetchWorkspacesRequestMessage,
@@ -362,6 +364,8 @@ export interface PaseoAgentHandle {
   readonly timeline: PaseoAgentTimelineHandle;
   current(): PaseoAgent | null;
   refresh(requestId?: string): Promise<PaseoAgentRefetchResult | null>;
+  /** Compare-and-swap saved developer guidance, without interrupting work or replacing native identity. */
+  refreshGuidance(request: AgentGuidanceRefresh): Promise<AgentGuidanceRefreshResult>;
   send(text: string, options?: PaseoAgentSendOptions): Promise<void>;
   respondToPermission(options: PaseoAgentRespondToPermissionOptions): Promise<void>;
   /** Sends a prompt and resolves when that turn finishes or needs attention. */
@@ -942,6 +946,7 @@ function createAgentHandleFactory(
         current = result?.agent ?? null;
         return result;
       },
+      refreshGuidance: (request) => daemonClient.refreshAgentGuidance(id, request),
       send: async (text, options) => {
         await daemonClient.sendAgentMessage(id, text, options);
       },

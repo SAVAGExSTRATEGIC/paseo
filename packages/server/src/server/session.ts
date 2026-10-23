@@ -4613,6 +4613,20 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Refreshing agent ${agentId} from persistence`);
 
     try {
+      if (msg.guidance) {
+        const guidance = await this.agentManager.refreshAgentGuidance(agentId, msg.guidance);
+        this.emit({
+          type: "status",
+          payload: {
+            status: "agent_refreshed",
+            agentId,
+            requestId,
+            timelineSize: this.agentManager.getTimeline(agentId).length,
+            guidance,
+          },
+        });
+        return;
+      }
       await this.restoreOwningWorkspaceForLegacyAgentRefresh(agentId);
       await unarchiveAgentState(this.agentStorage, this.agentManager, agentId);
       let snapshot: ManagedAgent;
