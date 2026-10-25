@@ -49,7 +49,7 @@ env:
 
 jobs:
   setup:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_FALLBACK_BACKEND == 'aws' && format('runs-on={0}-{1}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     outputs:
       image: ${{ steps.values.outputs.image }}
       install_version: ${{ steps.values.outputs.install_version }}
@@ -127,7 +127,7 @@ jobs:
   build:
     needs: setup
     if: needs.setup.outputs.publish != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_FALLBACK_BACKEND == 'aws' && format('runs-on={0}-{1}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -152,7 +152,7 @@ jobs:
   publish:
     needs: setup
     if: needs.setup.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_FALLBACK_BACKEND == 'aws' && format('runs-on={0}-{1}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write

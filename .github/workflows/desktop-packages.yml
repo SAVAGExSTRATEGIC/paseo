@@ -37,7 +37,7 @@ env:
 
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.CI_FALLBACK_BACKEND == 'aws' && format('runs-on={0}-{1}/runner=4cpu-linux-x64/volume=80gb:gp3:125mbs:3000iops/image=ubuntu24-full-x64', github.run_id, github.run_attempt) || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
